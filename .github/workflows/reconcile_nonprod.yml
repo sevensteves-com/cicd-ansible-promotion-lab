@@ -21,6 +21,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Validate and load components
         id: components
@@ -139,13 +140,59 @@ jobs:
           ansible-playbook -i inventory/test/hosts.yml
           "$PLAYBOOK" --limit "$LIMIT"
 
-  request_prod_approval:
-    name: "Request ${{ matrix.name }} approval"
+  prepare_prod_approval:
+    name: Find changed production components
     needs: [prepare, reconcile_test]
     if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.components.outputs.matrix }}
+      has_components: ${{ steps.components.outputs.has_components }}
+    steps:
+      - name: Check out candidate and production tags
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compare with successfully applied versions
+        id: components
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          MATRIX=$(
+            python3 scripts/prod_components.py approval-matrix --sha "$HEAD_SHA"
+          )
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          if [ "$(jq '.include | length' <<< "$MATRIX")" -gt 0 ]; then
+            echo "has_components=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_components=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "### Production approval candidates"
+            if [ "$(jq '.include | length' <<< "$MATRIX")" -eq 0 ]; then
+              echo "No component differs from its latest successful apply."
+            else
+              jq -r '
+                .include[] |
+                "- **\(.name)**: \(.reason) (applied: " +
+                (if .applied_sha == "" then "never" else .applied_sha[0:7] end) +
+                ")"
+              ' <<< "$MATRIX"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  request_prod_approval:
+    name: "Request ${{ matrix.name }} approval"
+    needs: prepare_prod_approval
+    if: needs.prepare_prod_approval.outputs.has_components == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.prepare_prod_approval.outputs.matrix) }}
     runs-on: ubuntu-latest
     permissions:
       actions: write

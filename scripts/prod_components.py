@@ -55,6 +55,14 @@ def validate_relative_path(value: Any, label: str, prefix: str) -> str:
     return path
 
 
+def validate_ansible_relative_path(value: Any, label: str) -> str:
+    path = require_string(value, label)
+    pure_path = PurePosixPath(path)
+    if pure_path.is_absolute() or ".." in pure_path.parts:
+        raise ManifestError(f"{label} must be a safe path relative to ansible/")
+    return path
+
+
 def validate_component(component: Any, index: int) -> dict[str, Any]:
     label = f"components[{index}]"
     if not isinstance(component, dict):
@@ -68,6 +76,7 @@ def validate_component(component: Any, index: int) -> dict[str, Any]:
         "limit",
         "env",
         "secret_env",
+        "dependency_paths",
     }
     unknown_keys = sorted(set(component) - allowed_keys)
     if unknown_keys:
@@ -91,6 +100,20 @@ def validate_component(component: Any, index: int) -> dict[str, Any]:
     limit = require_string(component.get("limit"), f"{label}.limit")
     if not LIMIT_RE.fullmatch(limit):
         raise ManifestError(f"{label}.limit contains unsupported characters")
+
+    dependency_paths = component.get("dependency_paths", [])
+    if not isinstance(dependency_paths, list):
+        raise ManifestError(f"{label}.dependency_paths must be an array")
+    validated_dependency_paths = []
+    for path_index, path in enumerate(dependency_paths):
+        validated_dependency_paths.append(
+            validate_ansible_relative_path(
+                path,
+                f"{label}.dependency_paths[{path_index}]",
+            )
+        )
+    if len(validated_dependency_paths) != len(set(validated_dependency_paths)):
+        raise ManifestError(f"{label}.dependency_paths contains duplicates")
 
     environment = component.get("env", {})
     if not isinstance(environment, dict):
@@ -144,6 +167,7 @@ def validate_component(component: Any, index: int) -> dict[str, Any]:
         "limit": limit,
         "env": validated_environment,
         "secret_env": validated_secret_environment,
+        "dependency_paths": validated_dependency_paths,
     }
 
 
@@ -200,10 +224,15 @@ def load_manifest_at_sha(sha: str) -> dict[str, Any]:
 
 
 def ensure_component_files(component: dict[str, Any], sha: str | None = None) -> None:
-    for key in ("inventory", "playbook"):
-        relative_path = f"ansible/{component[key]}"
+    component_paths = [
+        component["inventory"],
+        component["playbook"],
+        *component["dependency_paths"],
+    ]
+    for component_path in component_paths:
+        relative_path = f"ansible/{component_path}"
         if sha is None:
-            if not Path(relative_path).is_file():
+            if not Path(relative_path).exists():
                 raise ManifestError(
                     f"component {component['id']}: {relative_path} does not exist"
                 )
@@ -248,18 +277,32 @@ def matrix_item(component: dict[str, Any], sha: str) -> dict[str, Any]:
 
 def approval_matrix(manifest: dict[str, Any], sha: str) -> dict[str, Any]:
     sha = resolve_sha(sha)
+    changed_components = []
     for component in manifest["components"]:
         ensure_component_files(component)
-    return {
-        "include": [
-            {
-                "id": component["id"],
-                "name": component["name"],
-                "sha": sha,
-            }
-            for component in manifest["components"]
-        ]
-    }
+        applied_sha = latest_applied_sha(component["id"])
+        changed, reason = component_changed_since_apply(
+            component,
+            sha,
+            applied_sha,
+        )
+        state = "changed" if changed else "unchanged"
+        baseline = applied_sha[:7] if applied_sha else "never applied"
+        print(
+            f"{component['id']}: {state} versus {baseline} ({reason})",
+            file=sys.stderr,
+        )
+        if changed:
+            changed_components.append(
+                {
+                    "id": component["id"],
+                    "name": component["name"],
+                    "sha": sha,
+                    "applied_sha": applied_sha or "",
+                    "reason": reason,
+                }
+            )
+    return {"include": changed_components}
 
 
 def head_matrix(manifest: dict[str, Any], sha: str) -> dict[str, Any]:
@@ -306,11 +349,19 @@ def verify_approval_tag(component_id: str, sha: str) -> None:
 
 
 def latest_approved_sha(component_id: str) -> str | None:
+    return latest_component_tag_sha("prod-approved", component_id)
+
+
+def latest_applied_sha(component_id: str) -> str | None:
+    return latest_component_tag_sha("prod-applied", component_id)
+
+
+def latest_component_tag_sha(tag_prefix: str, component_id: str) -> str | None:
     refs = run_git(
         "for-each-ref",
         "--sort=-taggerdate",
         "--format=%(refname:short)|%(taggerdate:unix)",
-        f"refs/tags/prod-approved/{component_id}/*",
+        f"refs/tags/{tag_prefix}/{component_id}/*",
     )
     for line in refs.splitlines():
         if not line:
@@ -322,6 +373,76 @@ def latest_approved_sha(component_id: str) -> str | None:
             continue
         return resolve_sha(f"refs/tags/{tag}")
     return None
+
+
+def deployment_configuration(component: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: component[key]
+        for key in (
+            "inventory",
+            "playbook",
+            "limit",
+            "env",
+            "secret_env",
+            "dependency_paths",
+        )
+    }
+
+
+def component_tracked_paths(component: dict[str, Any]) -> set[str]:
+    return {
+        f"ansible/{path}"
+        for path in (
+            component["inventory"],
+            component["playbook"],
+            *component["dependency_paths"],
+        )
+    }
+
+
+def component_changed_since_apply(
+    component: dict[str, Any],
+    candidate_sha: str,
+    applied_sha: str | None,
+) -> tuple[bool, str]:
+    if applied_sha is None:
+        return True, "first production deployment"
+
+    applied_manifest = load_manifest_at_sha(applied_sha)
+    try:
+        applied_component = find_component(applied_manifest, component["id"])
+    except ManifestError:
+        return True, "component was not declared at the applied SHA"
+
+    if deployment_configuration(component) != deployment_configuration(
+        applied_component
+    ):
+        return True, "component declaration changed"
+
+    tracked_paths = sorted(
+        component_tracked_paths(component)
+        | component_tracked_paths(applied_component)
+    )
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            applied_sha,
+            candidate_sha,
+            "--",
+            *tracked_paths,
+        ],
+        check=False,
+    )
+    if result.returncode == 0:
+        return False, "deployment inputs are identical"
+    if result.returncode == 1:
+        return True, "tracked deployment content changed"
+    raise ManifestError(
+        f"git diff failed for component {component['id']} with "
+        f"status {result.returncode}"
+    )
 
 
 def reconcile_matrix(

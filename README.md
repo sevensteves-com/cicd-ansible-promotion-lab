@@ -16,8 +16,8 @@ nonprod-base → dev → test → component approval → prod
 - There is not one GitHub Environment per playbook.
 
 Both lab components run through all three nonproduction inventories at the
-candidate SHA. After they pass, the workflow automatically creates a separate
-approval workflow run for each component:
+candidate SHA. After they pass, the workflow creates an approval run only for
+each component whose production inputs differ from its last successful apply:
 
 ```text
 Approve idmz-base at <sha>     → shared GitHub Environment: prod
@@ -37,6 +37,22 @@ maps:
 | `nginx-proxy` | `playbooks/nginx-proxy.yml` | `inventory/prod/hosts.yml` |
 
 Add or edit components in the manifest instead of copying workflow steps.
+
+Production approval runs are created only when a component differs from its
+latest successfully applied SHA. The comparison always includes its playbook,
+production inventory, and manifest deployment settings. Declare additional
+role, template, or shared-code paths relative to `ansible/` when needed:
+
+```json
+"dependency_paths": [
+  "roles/nginx_proxy",
+  "templates/shared"
+]
+```
+
+Nonproduction still reconciles every declared component at the whole candidate
+SHA. Change detection affects only which production approval runs are offered.
+Components without an applied tag are always offered for their first deploy.
 
 ## GitHub Setup
 
@@ -59,8 +75,9 @@ organization policy prevents these explicit permissions.
 2. Change `release_marker` in `playbooks/nginx-proxy.yml` in a later commit.
 3. Merge it and wait for `nonprod-base → dev → test`.
 4. Approve only the new `nginx-proxy` approval run.
-5. Confirm only `prod-approved/nginx-proxy/<sha>` is created and only the
-   nginx playbook reconciles.
+5. Confirm only
+   `prod-approved/nginx-proxy/<run-id>-<attempt>-<sha>` is created and only
+   the nginx playbook reconciles.
 6. Approve `idmz-base` later and confirm it reconciles independently.
 
 ## Scheduled Reconciliation

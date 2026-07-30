@@ -42,9 +42,19 @@ jobs:
       - name: Backfill durable rejection markers
         run: |
           jq -r '
+            .components as $components |
             .approval_events |
             to_entries[] |
+            . as $event |
             select(.value.kind == "rejected") |
+            (
+              $components[] |
+              select(.component_id == $event.key)
+            ) as $component |
+            select(
+              $component.applied == null or
+              $component.main_changed != false
+            ) |
             [
               .key,
               (.value.runId | tostring),

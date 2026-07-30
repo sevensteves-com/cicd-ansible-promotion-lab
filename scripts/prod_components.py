@@ -31,8 +31,7 @@ def run_git(*args: str, check: bool = True) -> str:
         ["git", *args],
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     if check and result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()

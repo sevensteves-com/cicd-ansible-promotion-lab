@@ -74,10 +74,34 @@ The daily 03:00 UTC workflow trigger is disabled by the manifest:
 Setting it to `true` reconciles every component at its independently latest
 annotated approval tag. It never promotes the current `main` SHA implicitly.
 
+## Production State Page
+
+The production workflow records two different immutable facts:
+
+- `prod-approved/<component>/<short-sha>` means that exact component version
+  passed the production approval gate.
+- `prod-applied/<component>/<run-id>-<attempt>-<short-sha>` is created only
+  after that component's Ansible run succeeds.
+
+The GitHub Pages dashboard plots both markers against `main`, and includes an
+exact table plus a machine-readable `state.json`. An approval whose reconcile
+fails therefore remains visibly pending.
+
+After merging this feature, select **GitHub Actions** under
+**Settings → Pages → Build and deployment → Source**, then manually run
+**Publish Prod State** once. The page will be available at:
+
+<https://sevensteves-com.github.io/cicd-ansible-promotion-lab/>
+
+The workflow uses GitHub's platform-managed `github-pages` deployment
+Environment. It is unrelated to the shared `prod` approval Environment and is
+not an Environment per playbook.
+
 ## Local Validation
 
 ```sh
 python scripts/prod_components.py validate
+python scripts/render_prod_state.py --output-dir /tmp/prod-state-site
 ruff check scripts/
 yamllint .github/workflows ansible
 ansible-playbook -i ansible/inventory/nonprod-base/hosts.yml \

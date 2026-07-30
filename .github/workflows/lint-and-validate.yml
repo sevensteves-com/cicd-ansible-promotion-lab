@@ -27,6 +27,11 @@ jobs:
         run: |
           python scripts/prod_components.py validate
           ruff check scripts/
+          python scripts/render_prod_state.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --output-dir /tmp/prod-state-site
+          test -s /tmp/prod-state-site/index.html
+          test -s /tmp/prod-state-site/state.json
 
       - name: Lint YAML
         run: yamllint .github/workflows ansible

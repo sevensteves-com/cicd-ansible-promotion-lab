@@ -8,7 +8,10 @@ import html
 import json
 import math
 import os
+import re
 import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +23,9 @@ from prod_components import (
 )
 
 MANIFEST_PATH = Path(".github/prod-components.json")
+APPROVAL_RUN_RE = re.compile(
+    r"^Approve ([a-z0-9](?:[a-z0-9-]*[a-z0-9])?) at ([0-9a-f]{40})$"
+)
 
 DASHBOARD_JAVASCRIPT = r"""
 (() => {
@@ -472,6 +478,16 @@ DASHBOARD_JAVASCRIPT = r"""
         `https://github.com/${config.repository}/commit/${commits[0].sha}`;
       mainLink.textContent = commits[0].sha.slice(0, 7);
     } catch (error) {
+      const snapshotEvents = new Map(
+        Object.entries(config.snapshotApprovalEvents || {})
+      );
+      const {states} = componentStates(
+        [],
+        config.snapshotCommits,
+        snapshotEvents
+      );
+      renderChart(states, config.snapshotCommits);
+      renderTable(states);
       sourceStatus.textContent =
         `Live refresh failed; showing build snapshot (${error.message})`;
     } finally {
@@ -645,6 +661,76 @@ def load_states(main_sha: str) -> list[ComponentState]:
     return states
 
 
+def github_api(repository: str, path: str, token: str) -> dict:
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}{path}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "prod-state-snapshot",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except (urllib.error.URLError, json.JSONDecodeError) as error:
+        raise RenderError(f"GitHub API request failed for {path}: {error}") from error
+
+
+def load_approval_events(repository: str, token: str | None) -> dict[str, dict]:
+    if not token:
+        print("No GITHUB_TOKEN; rendering without approval-event snapshot")
+        return {}
+
+    response = github_api(
+        repository,
+        "/actions/workflows/request_prod_approval.yml/runs?per_page=100",
+        token,
+    )
+    latest_runs: dict[str, dict] = {}
+    for run in response.get("workflow_runs", []):
+        match = APPROVAL_RUN_RE.fullmatch(run.get("display_title", ""))
+        if not match:
+            continue
+        component, sha = match.groups()
+        existing = latest_runs.get(component)
+        if existing is None or run["id"] > existing["id"]:
+            latest_runs[component] = {
+                "component": component,
+                "sha": sha,
+                "runId": run["id"],
+                "status": run["status"],
+                "conclusion": run["conclusion"],
+                "url": run["html_url"],
+            }
+
+    events = {}
+    for component, run in latest_runs.items():
+        if run["status"] == "waiting":
+            events[component] = {**run, "kind": "waiting"}
+            continue
+
+        jobs = github_api(
+            repository,
+            f"/actions/runs/{run['runId']}/jobs?per_page=20",
+            token,
+        )
+        approval_job = next(
+            (
+                job
+                for job in jobs.get("jobs", [])
+                if job.get("name") == f"Approve {component}"
+            ),
+            None,
+        )
+        if not approval_job or approval_job.get("conclusion") != "failure":
+            continue
+        kind = "rejected" if not approval_job.get("steps") else "failed"
+        events[component] = {**run, "kind": kind}
+    return events
+
+
 def marker_link(marker: Marker | None, repository: str) -> str:
     if marker is None:
         return '<span class="muted">none</span>'
@@ -758,7 +844,27 @@ def render_html(
     main_sha: str,
     repository: str,
     generated_at: str,
+    approval_events: dict[str, dict],
 ) -> str:
+    event_distances = [
+        distance
+        for event in approval_events.values()
+        if (distance := commit_distance(event["sha"], main_sha)) is not None
+    ]
+    distances = [
+        distance
+        for state in states
+        for distance in (state.approved_distance, state.applied_distance)
+        if distance is not None
+    ]
+    max_distance = max([6, *distances, *event_distances])
+    history_output = git(
+        "rev-list",
+        "--first-parent",
+        f"--max-count={max_distance + 1}",
+        main_sha,
+    )
+    history_shas = history_output.splitlines()
     live_config = {
         "repository": repository,
         "components": [
@@ -781,27 +887,14 @@ def render_html(
             for state in states
         },
         "snapshotMainSha": main_sha,
+        "snapshotApprovalEvents": approval_events,
+        "snapshotCommits": [{"sha": sha} for sha in history_shas],
     }
     live_config_json = json.dumps(live_config, separators=(",", ":")).replace(
         "</", "<\\/"
     )
-    distances = [
-        distance
-        for state in states
-        for distance in (state.approved_distance, state.applied_distance)
-        if distance is not None
-    ]
-    max_distance = max([6, *distances])
-    history_output = git(
-        "log",
-        "--first-parent",
-        f"--max-count={max_distance + 1}",
-        "--format=%h",
-        main_sha,
-    )
     history = {
-        distance: short_sha
-        for distance, short_sha in enumerate(history_output.splitlines())
+        distance: sha[:7] for distance, sha in enumerate(history_shas)
     }
     chart = render_chart(states, main_sha, history, max_distance)
     rows = []
@@ -1018,6 +1111,11 @@ def parse_args() -> argparse.Namespace:
         "--repository",
         default=os.environ.get("GITHUB_REPOSITORY", "sevensteves-com/cicd-ansible-promotion-lab"),
     )
+    parser.add_argument(
+        "--github-token",
+        default=os.environ.get("GITHUB_TOKEN"),
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
@@ -1026,9 +1124,16 @@ def main() -> int:
     main_sha = resolve_main()
     generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     states = load_states(main_sha)
+    approval_events = load_approval_events(args.repository, args.github_token)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "index.html").write_text(
-        render_html(states, main_sha, args.repository, generated_at),
+        render_html(
+            states,
+            main_sha,
+            args.repository,
+            generated_at,
+            approval_events,
+        ),
         encoding="utf-8",
     )
     (args.output_dir / "dashboard.js").write_text(
@@ -1039,6 +1144,7 @@ def main() -> int:
         "generated_at": generated_at,
         "repository": args.repository,
         "main_sha": main_sha,
+        "approval_events": approval_events,
         "components": [asdict(state) for state in states],
     }
     (args.output_dir / "state.json").write_text(

@@ -122,13 +122,14 @@ successfully applied as separate states. A rejection is identified by a
 failed environment-gated approval job with no executed workflow steps; other
 approval workflow failures are shown separately.
 
-The published snapshot also runs the same component comparison as approval
-selection. An applied SHA can lag behind `main` while still showing **Up to
-date — no relevant component changes**. Each successful apply tag supplies
-the displayed last-reconciled time. The snapshot is refreshed on every push
-to `main` and after production reconciliation; live tag and approval updates
-remain visible between deployments. The build-time `state.json` is a fallback
-for legacy tags, not the primary live data source.
+The published snapshot uses its authenticated workflow token to embed the
+latest approval activity as well. Rejection dispatches a new snapshot build,
+so rejected state remains visible when a browser exhausts GitHub's anonymous
+API rate limit. The snapshot also runs the same component comparison as
+approval selection. An applied SHA can lag behind `main` while still showing
+**Up to date — no relevant component changes**. Each successful apply tag
+supplies the displayed last-reconciled time. The snapshot is refreshed on
+every push to `main`, after production reconciliation, and after rejection.
 
 After merging this feature, select **GitHub Actions** under
 **Settings → Pages → Build and deployment → Source**, then manually run

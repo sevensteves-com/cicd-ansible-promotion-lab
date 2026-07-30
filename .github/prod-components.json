@@ -1,5 +1,5 @@
 {
-  "scheduled_reconcile_enabled": false,
+  "scheduled_reconcile_enabled": true,
   "components": [
     {
       "id": "idmz-base",

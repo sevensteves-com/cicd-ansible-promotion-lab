@@ -22,6 +22,72 @@
         "LAB_COMPONENT": "nginx-proxy"
       },
       "secret_env": []
+    },
+    {
+      "id": "edge-firewall",
+      "name": "edge firewall",
+      "inventory": "inventory/prod/hosts.yml",
+      "playbook": "playbooks/edge-firewall.yml",
+      "limit": "lab",
+      "env": {
+        "LAB_COMPONENT": "edge-firewall"
+      },
+      "secret_env": []
+    },
+    {
+      "id": "dns-resolver",
+      "name": "DNS resolver",
+      "inventory": "inventory/prod/hosts.yml",
+      "playbook": "playbooks/dns-resolver.yml",
+      "limit": "lab",
+      "env": {
+        "LAB_COMPONENT": "dns-resolver"
+      },
+      "secret_env": []
+    },
+    {
+      "id": "certificate-sync",
+      "name": "certificate sync",
+      "inventory": "inventory/prod/hosts.yml",
+      "playbook": "playbooks/certificate-sync.yml",
+      "limit": "lab",
+      "env": {
+        "LAB_COMPONENT": "certificate-sync"
+      },
+      "secret_env": []
+    },
+    {
+      "id": "audit-forwarder",
+      "name": "audit forwarder",
+      "inventory": "inventory/prod/hosts.yml",
+      "playbook": "playbooks/audit-forwarder.yml",
+      "limit": "lab",
+      "env": {
+        "LAB_COMPONENT": "audit-forwarder"
+      },
+      "secret_env": []
+    },
+    {
+      "id": "bastion-access",
+      "name": "bastion access",
+      "inventory": "inventory/prod/hosts.yml",
+      "playbook": "playbooks/bastion-access.yml",
+      "limit": "lab",
+      "env": {
+        "LAB_COMPONENT": "bastion-access"
+      },
+      "secret_env": []
+    },
+    {
+      "id": "patch-baseline",
+      "name": "patch baseline",
+      "inventory": "inventory/prod/hosts.yml",
+      "playbook": "playbooks/patch-baseline.yml",
+      "limit": "lab",
+      "env": {
+        "LAB_COMPONENT": "patch-baseline"
+      },
+      "secret_env": []
     }
   ]
 }

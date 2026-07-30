@@ -1,0 +1,16 @@
+---
+- name: Reconcile edge firewall lab component
+  hosts: lab
+  gather_facts: false
+
+  vars:
+    release_marker: "edge-firewall-v1"
+
+  tasks:
+    - name: Show independently promoted edge firewall version
+      ansible.builtin.debug:
+        msg:
+          stage: "{{ lookup('ansible.builtin.env', 'LAB_STAGE') }}"
+          component: "{{ lookup('ansible.builtin.env', 'LAB_COMPONENT') }}"
+          marker: "{{ release_marker }}"
+          commit: "{{ lookup('ansible.builtin.env', 'APPROVED_SHA') }}"

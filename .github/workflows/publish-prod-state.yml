@@ -3,9 +3,6 @@ name: Publish Prod State
 
 "on":
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Reconcile Prod"]
-    types: [completed]
   push:
     branches: [main]
     paths:
@@ -18,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -42,6 +39,28 @@ jobs:
           python scripts/render_prod_state.py \
             --repository "$GITHUB_REPOSITORY" \
             --output-dir _site
+
+      - name: Initialize missing live state refs
+        run: |
+          jq -r '
+            .components[] |
+            .component_id as $component |
+            to_entries[] |
+            select(
+              (.key == "approved" or .key == "applied") and
+              .value != null
+            ) |
+            [$component, .key, .value.sha] |
+            @tsv
+          ' _site/state.json |
+          while IFS=$'\t' read -r component kind sha; do
+            tag="prod-current/${component}/${kind}"
+            if git show-ref --verify --quiet "refs/tags/${tag}"; then
+              continue
+            fi
+            git tag "$tag" "$sha"
+            git push origin "refs/tags/${tag}"
+          done
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v4

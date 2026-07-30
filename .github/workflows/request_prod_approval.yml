@@ -108,6 +108,15 @@ jobs:
           git tag -a "$TAG" "$SHA" -m "Approve $COMPONENT at $SHA"
           git push origin "$TAG"
 
+      - name: Update live approved version
+        env:
+          COMPONENT: ${{ inputs.component }}
+          SHA: ${{ inputs.head_sha }}
+        run: |
+          TAG="prod-current/${COMPONENT}/approved"
+          git tag --force "$TAG" "$SHA"
+          git push --force origin "refs/tags/${TAG}"
+
       - name: Dispatch exact component reconcile
         uses: actions/github-script@v8
         env:

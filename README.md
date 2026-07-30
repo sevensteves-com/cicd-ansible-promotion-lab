@@ -86,12 +86,13 @@ The production workflow records two different immutable facts:
 The run ID makes every approval an ordered event, including re-approval of an
 older SHA for rollback. Existing short-SHA-only approval tags remain valid.
 
-The GitHub Pages dashboard queries the immutable tags and recent `main`
-commits directly from GitHub's public API when it loads, every five minutes,
-and when **Refresh live state** is selected. Pages deployment is therefore
-only for dashboard code changes, not production data changes. The build-time
-`state.json` is a fallback snapshot for legacy tags, not the live data source.
-An approval whose reconcile fails remains visibly pending.
+The GitHub Pages dashboard queries the immutable tags, waiting production
+approval workflow runs, and recent `main` commits directly from GitHub's
+public API when it loads, every five minutes, and when **Refresh live state**
+is selected. It displays awaiting approval, approved, and successfully
+applied as separate states. Pages deployment is therefore only for dashboard
+code changes, not production data changes. The build-time `state.json` is a
+fallback snapshot for legacy tags, not the live data source.
 
 After merging this feature, select **GitHub Actions** under
 **Settings → Pages → Build and deployment → Source**, then manually run

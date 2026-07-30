@@ -88,8 +88,32 @@ DASHBOARD_JAVASCRIPT = r"""
     return versions;
   }
 
-  function componentStates(tags, commits) {
+  function waitingApprovals(runs) {
+    const approvals = new Map();
+    for (const run of runs) {
+      const match = run.display_title.match(
+        /^Approve ([a-z0-9](?:[a-z0-9-]*[a-z0-9])?) at ([0-9a-f]{40})$/
+      );
+      if (!match || run.status !== "waiting") {
+        continue;
+      }
+      const [, component, sha] = match;
+      const existing = approvals.get(component);
+      if (!existing || run.id > existing.runId) {
+        approvals.set(component, {
+          sha,
+          runId: run.id,
+          url: run.html_url,
+          source: "live",
+        });
+      }
+    }
+    return approvals;
+  }
+
+  function componentStates(tags, commits, approvalRuns) {
     const live = liveVersions(tags);
+    const waiting = waitingApprovals(approvalRuns);
     let usedFallback = false;
     const states = config.components.map((component) => {
       const current = live.get(component.id) || {};
@@ -106,9 +130,18 @@ DASHBOARD_JAVASCRIPT = r"""
       const appliedDistance = applied
         ? commits.findIndex((commit) => commit.sha === applied.sha)
         : null;
+      const waitingApproval = waiting.get(component.id) || null;
+      const waitingDistance = waitingApproval
+        ? commits.findIndex((commit) => commit.sha === waitingApproval.sha)
+        : null;
       let status = "Not approved or applied";
       let statusKind = "unknown";
-      if (!approved && !applied) {
+      if (waitingApproval) {
+        const productionSha = applied ? applied.sha.slice(0, 7) : "none";
+        status = `${waitingApproval.sha.slice(0, 7)} is awaiting production ` +
+          `approval; production remains ${productionSha}`;
+        statusKind = "pending";
+      } else if (!approved && !applied) {
         status = "Not approved or applied";
       } else if (approved && !applied) {
         status = "Approved; awaiting first successful apply";
@@ -137,6 +170,8 @@ DASHBOARD_JAVASCRIPT = r"""
         applied,
         approvedDistance,
         appliedDistance,
+        waitingApproval,
+        waitingDistance,
         status,
         statusKind,
       };
@@ -156,7 +191,7 @@ DASHBOARD_JAVASCRIPT = r"""
 
   function renderChart(states, commits) {
     const distances = states.flatMap((state) =>
-      [state.approvedDistance, state.appliedDistance]
+      [state.approvedDistance, state.appliedDistance, state.waitingDistance]
         .filter((distance) => distance !== null && distance >= 0)
     );
     const maxDistance = Math.max(6, ...distances);
@@ -188,6 +223,7 @@ DASHBOARD_JAVASCRIPT = r"""
       const y = 84 + (index * rowHeight);
       const approvedX = xPosition(state.approvedDistance, maxDistance);
       const appliedX = xPosition(state.appliedDistance, maxDistance);
+      const waitingX = xPosition(state.waitingDistance, maxDistance);
       lines.push(
         `<text x="12" y="${y + 5}" class="component-name">` +
           `${escapeHtml(state.name)}</text>`,
@@ -221,7 +257,30 @@ DASHBOARD_JAVASCRIPT = r"""
             `l -10 -10 z" class="${markerClass}"/>`,
           `<text x="${approvedX}" y="${labelY}" text-anchor="middle" ` +
             `class="marker-label">approved ` +
-            `${escapeHtml(state.approved.sha.slice(0, 7))}</text>`
+          `${escapeHtml(state.approved.sha.slice(0, 7))}</text>`
+        );
+      }
+      if (state.waitingApproval) {
+        const priorX = state.approved ? approvedX : appliedX;
+        const waitingLabelX = state.waitingDistance === 0
+          ? waitingX - 6
+          : waitingX;
+        const waitingLabelAnchor = state.waitingDistance === 0
+          ? "end"
+          : "middle";
+        if (state.approved || state.applied) {
+          lines.push(
+            `<line x1="${priorX}" y1="${y}" x2="${waitingX}" y2="${y}" ` +
+              'class="approval-request-line"/>'
+          );
+        }
+        lines.push(
+          `<circle cx="${waitingX}" cy="${y}" r="10" ` +
+            'class="approval-waiting"/>',
+          `<text x="${waitingLabelX}" y="${y - 15}" ` +
+            `text-anchor="${waitingLabelAnchor}" ` +
+            `class="marker-label">awaiting approval ` +
+            `${escapeHtml(state.waitingApproval.sha.slice(0, 7))}</text>`
         );
       }
     });
@@ -234,8 +293,10 @@ DASHBOARD_JAVASCRIPT = r"""
       return '<span class="muted">none</span>';
     }
     const sha = escapeHtml(marker.sha);
-    return `<a href="https://github.com/${escapeHtml(config.repository)}` +
-      `/commit/${sha}">${sha.slice(0, 7)}</a>`;
+    const url = marker.url
+      ? escapeHtml(marker.url)
+      : `https://github.com/${escapeHtml(config.repository)}/commit/${sha}`;
+    return `<a href="${url}">${sha.slice(0, 7)}</a>`;
   }
 
   function renderTable(states) {
@@ -244,6 +305,7 @@ DASHBOARD_JAVASCRIPT = r"""
       `<small>${escapeHtml(state.id)}</small></th>` +
       `<td>${versionLink(state.applied)}</td>` +
       `<td>${versionLink(state.approved)}</td>` +
+      `<td>${versionLink(state.waitingApproval)}</td>` +
       `<td><span class="status ${escapeHtml(state.statusKind)}">` +
       `${escapeHtml(state.status)}</span></td></tr>`
     ).join("");
@@ -253,17 +315,25 @@ DASHBOARD_JAVASCRIPT = r"""
     refreshButton.disabled = true;
     sourceStatus.textContent = "Loading immutable GitHub tags…";
     try {
-      const [tags, commits] = await Promise.all([
+      const [tags, commits, approvalRuns] = await Promise.all([
         repositoryTags(),
         api("/commits?sha=main&per_page=30"),
+        api(
+          "/actions/workflows/request_prod_approval.yml/runs" +
+          "?per_page=100&status=waiting"
+        ),
       ]);
-      const {states, usedFallback} = componentStates(tags, commits);
+      const {states, usedFallback} = componentStates(
+        tags,
+        commits,
+        approvalRuns.workflow_runs
+      );
       renderChart(states, commits);
       renderTable(states);
       const now = new Date();
       sourceStatus.textContent = usedFallback
-        ? "Live immutable tags with build-snapshot fallback"
-        : "Live from immutable GitHub tags";
+        ? "Live tags and approval runs with build-snapshot fallback"
+        : "Live from GitHub tags and approval runs";
       lastRefresh.textContent = `Live data refreshed ${now.toLocaleString()}`;
       mainLink.href =
         `https://github.com/${config.repository}/commit/${commits[0].sha}`;
@@ -568,6 +638,7 @@ def render_html(
             f'<small>{html.escape(state.component_id)}</small></th>'
             f"<td>{marker_link(state.applied, repository)}</td>"
             f"<td>{marker_link(state.approved, repository)}</td>"
+            '<td><span class="muted">none</span></td>'
             f'<td><span class="status {state.status_kind}">'
             f"{html.escape(state.status)}</span></td>"
             "</tr>"
@@ -621,7 +692,8 @@ def render_html(
       background: var(--muted);
     }}
     .legend .applied::before {{ background: var(--green); }}
-    .legend .approved::before {{ background: var(--amber); }}
+    .legend .approved::before {{ background: var(--blue); }}
+    .legend .waiting::before {{ background: var(--amber); }}
     .live-controls {{
       display: flex;
       flex-wrap: wrap;
@@ -647,12 +719,26 @@ def render_html(
     .grid-line {{ stroke: var(--border); stroke-dasharray: 3 5; }}
     .rail {{ stroke: #484f58; stroke-width: 6; stroke-linecap: round; }}
     .applied-line {{ stroke: var(--green); stroke-width: 7; }}
-    .pending-line {{ stroke: var(--amber); stroke-width: 7; }}
+    .pending-line {{ stroke: var(--blue); stroke-width: 7; }}
+    .approval-request-line {{
+      stroke: var(--amber);
+      stroke-width: 4;
+      stroke-dasharray: 8 6;
+    }}
     .applied-marker, .approved-current {{ fill: var(--green); }}
-    .approved-pending {{ fill: var(--amber); }}
+    .approved-pending {{ fill: var(--blue); }}
+    .approval-waiting {{
+      fill: var(--panel);
+      stroke: var(--amber);
+      stroke-width: 4;
+    }}
     table {{ width: 100%; min-width: 760px; border-collapse: collapse; }}
     th, td {{ padding: 14px; border-bottom: 1px solid var(--border); text-align: left; }}
-    th {{ width: 25%; }}
+    thead th:nth-child(1) {{ width: 21%; }}
+    thead th:nth-child(2) {{ width: 15%; }}
+    thead th:nth-child(3) {{ width: 16%; }}
+    thead th:nth-child(4) {{ width: 18%; }}
+    thead th:nth-child(5) {{ width: 30%; }}
     th small {{ display: block; font-weight: 400; }}
     a {{ color: var(--blue); font-family: ui-monospace, monospace; }}
     .status {{ display: inline-flex; align-items: center; gap: 7px; }}
@@ -681,6 +767,7 @@ def render_html(
       <div class="legend">
         <span class="applied">Successfully applied</span>
         <span class="approved">Approved, not yet applied</span>
+        <span class="waiting">Awaiting prod approval</span>
         <span>Main history</span>
       </div>
       <div id="chart">{chart}</div>
@@ -692,6 +779,7 @@ def render_html(
             <th>Playbook</th>
             <th>Last applied</th>
             <th>Latest approved</th>
+            <th>Awaiting approval</th>
             <th>State</th>
           </tr>
         </thead>

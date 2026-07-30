@@ -13,4 +13,4 @@
           stage: "{{ lookup('ansible.builtin.env', 'LAB_STAGE') }}"
           component: "{{ lookup('ansible.builtin.env', 'LAB_COMPONENT') }}"
           marker: "{{ release_marker }}"
-          commit: "{{ lookup('ansible.builtin.env', 'GITHUB_SHA') }}"
+          commit: "{{ lookup('ansible.builtin.env', 'APPROVED_SHA') }}"

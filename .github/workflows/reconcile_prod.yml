@@ -141,3 +141,28 @@ jobs:
           git tag --annotate "$TAG" "$SHA" \
             --message "Successfully applied ${COMPONENT} at ${SHA}"
           git push origin "refs/tags/${TAG}"
+
+  publish_state:
+    name: Refresh production state snapshot
+    needs: [prepare, reconcile_component]
+    if: >-
+      always() &&
+      needs.prepare.outputs.has_components == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch dashboard publish
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.request(
+              'POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches',
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'publish-prod-state.yml',
+                ref: context.payload.repository.default_branch,
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+              }
+            );

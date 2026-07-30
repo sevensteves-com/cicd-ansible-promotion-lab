@@ -82,14 +82,16 @@ organization policy prevents these explicit permissions.
 
 ## Scheduled Reconciliation
 
-The daily 03:00 UTC workflow trigger is disabled by the manifest:
+The manifest enables daily reconciliation at 03:00 UTC:
 
 ```json
-"scheduled_reconcile_enabled": false
+"scheduled_reconcile_enabled": true
 ```
 
-Setting it to `true` reconciles every component at its independently latest
-annotated approval tag. It never promotes the current `main` SHA implicitly.
+The schedule reconciles every component at its independently latest annotated
+approval tag, even when its production inputs have not changed. This corrects
+runtime drift without creating another approval. It never promotes the current
+`main` SHA implicitly.
 
 ## Production State Page
 
@@ -107,9 +109,15 @@ The GitHub Pages dashboard queries the immutable tags, waiting production
 approval workflow runs, and recent `main` commits directly from GitHub's
 public API when it loads, every five minutes, and when **Refresh live state**
 is selected. It displays awaiting approval, approved, and successfully
-applied as separate states. Pages deployment is therefore only for dashboard
-code changes, not production data changes. The build-time `state.json` is a
-fallback snapshot for legacy tags, not the live data source.
+applied as separate states.
+
+The published snapshot also runs the same component comparison as approval
+selection. An applied SHA can lag behind `main` while still showing **Up to
+date — no relevant component changes**. Each successful apply tag supplies
+the displayed last-reconciled time. The snapshot is refreshed on every push
+to `main` and after production reconciliation; live tag and approval updates
+remain visible between deployments. The build-time `state.json` is a fallback
+for legacy tags, not the primary live data source.
 
 After merging this feature, select **GitHub Actions** under
 **Settings → Pages → Build and deployment → Source**, then manually run

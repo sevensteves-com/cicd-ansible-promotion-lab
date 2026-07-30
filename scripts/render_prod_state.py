@@ -13,6 +13,12 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from prod_components import (
+    ManifestError,
+    component_changed_since_apply,
+    load_manifest_file,
+)
+
 MANIFEST_PATH = Path(".github/prod-components.json")
 
 DASHBOARD_JAVASCRIPT = r"""
@@ -134,6 +140,18 @@ DASHBOARD_JAVASCRIPT = r"""
       const waitingDistance = waitingApproval
         ? commits.findIndex((commit) => commit.sha === waitingApproval.sha)
         : null;
+      const semanticFresh = (
+        config.snapshotMainSha === commits[0].sha &&
+        Boolean(snapshot.applied) === Boolean(applied) &&
+        (!applied || snapshot.applied.sha === applied.sha)
+      );
+      const mainChanged = semanticFresh ? snapshot.mainChanged : null;
+      const changeReason = semanticFresh ? snapshot.changeReason : null;
+      const lastReconciledAt = (
+        snapshot.applied &&
+        applied &&
+        snapshot.applied.sha === applied.sha
+      ) ? snapshot.applied.taggedAt : null;
       let status = "Not approved or applied";
       let statusKind = "unknown";
       if (waitingApproval) {
@@ -151,6 +169,12 @@ DASHBOARD_JAVASCRIPT = r"""
         statusKind = "warning";
       } else if (approved.sha !== applied.sha) {
         status = "Newer approval is awaiting a successful apply";
+        statusKind = "pending";
+      } else if (mainChanged === false) {
+        status = "Up to date — no relevant component changes";
+        statusKind = "current";
+      } else if (mainChanged === true) {
+        status = "Production inputs differ from main";
         statusKind = "pending";
       } else if (approvedDistance === 0) {
         status = "Production matches its latest approval and main";
@@ -172,6 +196,9 @@ DASHBOARD_JAVASCRIPT = r"""
         appliedDistance,
         waitingApproval,
         waitingDistance,
+        mainChanged,
+        changeReason,
+        lastReconciledAt,
         status,
         statusKind,
       };
@@ -239,6 +266,12 @@ DASHBOARD_JAVASCRIPT = r"""
             `class="marker-label">applied ` +
             `${escapeHtml(state.applied.sha.slice(0, 7))}</text>`
         );
+        if (state.mainChanged === false && state.appliedDistance > 0) {
+          lines.push(
+            `<line x1="${appliedX}" y1="${y}" x2="1050" y2="${y}" ` +
+              'class="semantic-current-line"/>'
+          );
+        }
       }
       if (state.approved) {
         if (state.applied && state.applied.sha !== state.approved.sha) {
@@ -303,7 +336,13 @@ DASHBOARD_JAVASCRIPT = r"""
     tableBody.innerHTML = states.map((state) =>
       `<tr><th>${escapeHtml(state.name)}` +
       `<small>${escapeHtml(state.id)}</small></th>` +
-      `<td>${versionLink(state.applied)}</td>` +
+      `<td>${versionLink(state.applied)}` +
+      (state.lastReconciledAt
+        ? `<small class="reconciled">Reconciled ` +
+          `${escapeHtml(new Date(state.lastReconciledAt).toLocaleString())}` +
+          `</small>`
+        : "") +
+      `</td>` +
       `<td>${versionLink(state.approved)}</td>` +
       `<td>${versionLink(state.waitingApproval)}</td>` +
       `<td><span class="status ${escapeHtml(state.statusKind)}">` +
@@ -372,6 +411,9 @@ class ComponentState:
     applied: Marker | None
     approved_distance: int | None
     applied_distance: int | None
+    main_changed: bool | None
+    change_reason: str | None
+    last_reconciled_at: str | None
     status: str
     status_kind: str
 
@@ -431,6 +473,7 @@ def describe_status(
     approved: Marker | None,
     applied: Marker | None,
     approved_distance: int | None,
+    main_changed: bool | None,
 ) -> tuple[str, str]:
     if approved is None and applied is None:
         return "Not approved or applied", "unknown"
@@ -440,6 +483,10 @@ def describe_status(
         return "Applied marker exists without a current approval", "warning"
     if approved.sha != applied.sha:
         return "Newer approval is awaiting a successful apply", "pending"
+    if main_changed is False:
+        return "Up to date — no relevant component changes", "current"
+    if main_changed is True:
+        return "Production inputs differ from main", "pending"
     if approved_distance is None:
         return "Applied commit is not on main", "warning"
     if approved_distance == 0:
@@ -452,7 +499,10 @@ def describe_status(
 
 
 def load_states(main_sha: str) -> list[ComponentState]:
-    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    try:
+        manifest = load_manifest_file(MANIFEST_PATH)
+    except ManifestError as error:
+        raise RenderError(str(error)) from error
     states = []
     for component in manifest["components"]:
         component_id = component["id"]
@@ -466,10 +516,22 @@ def load_states(main_sha: str) -> list[ComponentState]:
             applied.sha if applied else None,
             main_sha,
         )
+        main_changed = None
+        change_reason = None
+        if applied:
+            try:
+                main_changed, change_reason = component_changed_since_apply(
+                    component,
+                    main_sha,
+                    applied.sha,
+                )
+            except ManifestError as error:
+                raise RenderError(str(error)) from error
         status, status_kind = describe_status(
             approved,
             applied,
             approved_distance,
+            main_changed,
         )
         states.append(
             ComponentState(
@@ -479,6 +541,9 @@ def load_states(main_sha: str) -> list[ComponentState]:
                 applied=applied,
                 approved_distance=approved_distance,
                 applied_distance=applied_distance,
+                main_changed=main_changed,
+                change_reason=change_reason,
+                last_reconciled_at=applied.tagged_at if applied else None,
                 status=status,
                 status_kind=status_kind,
             )
@@ -564,6 +629,11 @@ def render_chart(
                 f'class="marker-label">applied {html.escape(state.applied.sha[:7])}'
                 "</text>"
             )
+            if state.main_changed is False and state.applied_distance:
+                lines.append(
+                    f'<line x1="{applied_x:.1f}" y1="{y}" '
+                    f'x2="1050" y2="{y}" class="semantic-current-line"/>'
+                )
         if state.approved:
             if state.applied and state.applied.sha != state.approved.sha:
                 lines.append(
@@ -603,10 +673,20 @@ def render_html(
         "snapshot": {
             state.component_id: {
                 "approved": {"sha": state.approved.sha} if state.approved else None,
-                "applied": {"sha": state.applied.sha} if state.applied else None,
+                "applied": (
+                    {
+                        "sha": state.applied.sha,
+                        "taggedAt": state.applied.tagged_at,
+                    }
+                    if state.applied
+                    else None
+                ),
+                "mainChanged": state.main_changed,
+                "changeReason": state.change_reason,
             }
             for state in states
         },
+        "snapshotMainSha": main_sha,
     }
     live_config_json = json.dumps(live_config, separators=(",", ":")).replace(
         "</", "<\\/"
@@ -636,7 +716,14 @@ def render_html(
             "<tr>"
             f"<th>{html.escape(state.name)}"
             f'<small>{html.escape(state.component_id)}</small></th>'
-            f"<td>{marker_link(state.applied, repository)}</td>"
+            f"<td>{marker_link(state.applied, repository)}"
+            + (
+                f'<small class="reconciled">Reconciled '
+                f"{html.escape(state.last_reconciled_at)}</small>"
+                if state.last_reconciled_at
+                else ""
+            )
+            + "</td>"
             f"<td>{marker_link(state.approved, repository)}</td>"
             '<td><span class="muted">none</span></td>'
             f'<td><span class="status {state.status_kind}">'
@@ -719,6 +806,12 @@ def render_html(
     .grid-line {{ stroke: var(--border); stroke-dasharray: 3 5; }}
     .rail {{ stroke: #484f58; stroke-width: 6; stroke-linecap: round; }}
     .applied-line {{ stroke: var(--green); stroke-width: 7; }}
+    .semantic-current-line {{
+      stroke: var(--green);
+      stroke-width: 4;
+      stroke-dasharray: 7 6;
+      opacity: .7;
+    }}
     .pending-line {{ stroke: var(--blue); stroke-width: 7; }}
     .approval-request-line {{
       stroke: var(--amber);
@@ -739,7 +832,13 @@ def render_html(
     thead th:nth-child(3) {{ width: 16%; }}
     thead th:nth-child(4) {{ width: 18%; }}
     thead th:nth-child(5) {{ width: 30%; }}
-    th small {{ display: block; font-weight: 400; }}
+    th small, .reconciled {{
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 400;
+    }}
     a {{ color: var(--blue); font-family: ui-monospace, monospace; }}
     .status {{ display: inline-flex; align-items: center; gap: 7px; }}
     .status::before {{
@@ -777,7 +876,7 @@ def render_html(
         <thead>
           <tr>
             <th>Playbook</th>
-            <th>Last applied</th>
+            <th>Last applied / reconciled</th>
             <th>Latest approved</th>
             <th>Awaiting approval</th>
             <th>State</th>

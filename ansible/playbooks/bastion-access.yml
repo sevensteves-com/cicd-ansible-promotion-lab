@@ -4,7 +4,7 @@
   gather_facts: false
 
   vars:
-    release_marker: "bastion-access-v1"
+    release_marker: "bastion-access-v2"
 
   tasks:
     - name: Show independently promoted bastion access version

@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install validation tools
-        run: pip install ansible-core ruff yamllint
+        run: pip install ruff yamllint
 
       - name: Validate manifest and Python
         run: |
@@ -36,12 +36,3 @@ jobs:
 
       - name: Lint YAML
         run: yamllint .github/workflows ansible
-
-      - name: Syntax check declared playbooks
-        run: |
-          jq -r '.components[] | [.inventory, .playbook] | @tsv' \
-            .github/prod-components.json |
-          while IFS=$'\t' read -r inventory playbook; do
-            ansible-playbook -i "ansible/$inventory" \
-              "ansible/$playbook" --syntax-check
-          done

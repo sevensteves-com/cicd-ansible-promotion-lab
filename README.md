@@ -1,8 +1,10 @@
 # CI/CD Ansible Promotion Lab
 
 This public lab mirrors the promotion environments and component names used by
-`or-platform-idmz-infra`, while every playbook safely targets localhost on a
-GitHub-hosted runner.
+`or-platform-idmz-infra`. Reconcile jobs validate and display the exact
+inventory, playbook, limit, environment, and SHA they would run, but deliberately
+do not install or execute Ansible. The lab tests promotion orchestration rather
+than configuration-management behavior.
 
 ## Environment Flow
 
@@ -24,7 +26,8 @@ Approve idmz-base at <sha>     → shared GitHub Environment: prod
 Approve nginx-proxy at <sha>   → shared GitHub Environment: prod
 ```
 
-Approving one run creates its component tag and reconciles only that playbook.
+Approving one run creates its component tag and simulates reconciling only that
+playbook.
 
 ## Component Declaration
 
@@ -106,7 +109,7 @@ The production workflow records two different immutable facts:
 - `prod-approved/<component>/<run-id>-<attempt>-<short-sha>` means that exact
   component version passed the production approval gate.
 - `prod-applied/<component>/<run-id>-<attempt>-<short-sha>` is created only
-  after that component's Ansible run succeeds.
+  after that component's simulated reconcile succeeds.
 
 The run ID makes every approval an ordered event, including re-approval of an
 older SHA for rollback. Existing short-SHA-only approval tags remain valid.
@@ -144,14 +147,4 @@ python scripts/prod_components.py validate
 python scripts/render_prod_state.py --output-dir /tmp/prod-state-site
 ruff check scripts/
 yamllint .github/workflows ansible
-ansible-playbook -i ansible/inventory/nonprod-base/hosts.yml \
-  ansible/playbooks/idmz_base.yml --syntax-check
-ansible-playbook -i ansible/inventory/dev/hosts.yml \
-  ansible/playbooks/idmz_base.yml --syntax-check
-ansible-playbook -i ansible/inventory/test/hosts.yml \
-  ansible/playbooks/idmz_base.yml --syntax-check
-ansible-playbook -i ansible/inventory/prod/hosts.yml \
-  ansible/playbooks/idmz_base.yml --syntax-check
-ansible-playbook -i ansible/inventory/prod/hosts.yml \
-  ansible/playbooks/nginx-proxy.yml --syntax-check
 ```

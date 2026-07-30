@@ -55,18 +55,18 @@ jobs:
           COMPONENT_ENV_JSON: ${{ matrix.env_json }}
         run: python3 scripts/prod_components.py export-env
 
-      - name: Install Ansible
-        run: python3 -m pip install ansible-core
-
-      - name: Run component in nonprod-base
-        working-directory: ansible
+      - name: Simulate component reconcile in nonprod-base
         env:
           LAB_STAGE: nonprod-base
+          COMPONENT: ${{ matrix.id }}
+          INVENTORY: inventory/nonprod-base/hosts.yml
           PLAYBOOK: ${{ matrix.playbook }}
           LIMIT: ${{ matrix.limit }}
-        run: >-
-          ansible-playbook -i inventory/nonprod-base/hosts.yml
-          "$PLAYBOOK" --limit "$LIMIT"
+        run: |
+          test -f "ansible/$INVENTORY"
+          test -f "ansible/$PLAYBOOK"
+          echo "Would reconcile $COMPONENT in $LAB_STAGE"
+          echo "ansible-playbook -i $INVENTORY $PLAYBOOK --limit $LIMIT"
 
   reconcile_dev:
     name: "dev · ${{ matrix.name }}"
@@ -91,18 +91,18 @@ jobs:
           COMPONENT_ENV_JSON: ${{ matrix.env_json }}
         run: python3 scripts/prod_components.py export-env
 
-      - name: Install Ansible
-        run: python3 -m pip install ansible-core
-
-      - name: Run component in dev
-        working-directory: ansible
+      - name: Simulate component reconcile in dev
         env:
           LAB_STAGE: dev
+          COMPONENT: ${{ matrix.id }}
+          INVENTORY: inventory/dev/hosts.yml
           PLAYBOOK: ${{ matrix.playbook }}
           LIMIT: ${{ matrix.limit }}
-        run: >-
-          ansible-playbook -i inventory/dev/hosts.yml
-          "$PLAYBOOK" --limit "$LIMIT"
+        run: |
+          test -f "ansible/$INVENTORY"
+          test -f "ansible/$PLAYBOOK"
+          echo "Would reconcile $COMPONENT in $LAB_STAGE"
+          echo "ansible-playbook -i $INVENTORY $PLAYBOOK --limit $LIMIT"
 
   reconcile_test:
     name: "test · ${{ matrix.name }}"
@@ -127,18 +127,18 @@ jobs:
           COMPONENT_ENV_JSON: ${{ matrix.env_json }}
         run: python3 scripts/prod_components.py export-env
 
-      - name: Install Ansible
-        run: python3 -m pip install ansible-core
-
-      - name: Run component in test
-        working-directory: ansible
+      - name: Simulate component reconcile in test
         env:
           LAB_STAGE: test
+          COMPONENT: ${{ matrix.id }}
+          INVENTORY: inventory/test/hosts.yml
           PLAYBOOK: ${{ matrix.playbook }}
           LIMIT: ${{ matrix.limit }}
-        run: >-
-          ansible-playbook -i inventory/test/hosts.yml
-          "$PLAYBOOK" --limit "$LIMIT"
+        run: |
+          test -f "ansible/$INVENTORY"
+          test -f "ansible/$PLAYBOOK"
+          echo "Would reconcile $COMPONENT in $LAB_STAGE"
+          echo "ansible-playbook -i $INVENTORY $PLAYBOOK --limit $LIMIT"
 
   prepare_prod_approval:
     name: Find changed production components

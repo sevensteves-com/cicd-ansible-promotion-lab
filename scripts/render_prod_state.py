@@ -695,7 +695,7 @@ def load_approval_events(repository: str, token: str | None) -> dict[str, dict]:
             continue
         component, sha = match.groups()
         existing = latest_runs.get(component)
-        if existing is None or run["id"] > existing["id"]:
+        if existing is None or run["id"] > existing["runId"]:
             latest_runs[component] = {
                 "component": component,
                 "sha": sha,

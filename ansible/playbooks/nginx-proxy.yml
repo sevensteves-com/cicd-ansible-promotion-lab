@@ -4,7 +4,7 @@
   gather_facts: false
 
   vars:
-    release_marker: "nginx-proxy-v1"
+    release_marker: "nginx-proxy-v2"
 
   tasks:
     - name: Show independently promoted nginx proxy version

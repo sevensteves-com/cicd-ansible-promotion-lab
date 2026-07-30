@@ -94,6 +94,10 @@ dashboard code changes, not production data changes. The build-time
 `state.json` is a fallback snapshot, not the live data source. An approval
 whose reconcile fails remains visibly pending.
 
+The Pages deployment initializes any missing current-state refs from the
+immutable history. This bootstraps promotions that existed before the live
+read model; it never overwrites an existing current-state ref.
+
 After merging this feature, select **GitHub Actions** under
 **Settings → Pages → Build and deployment → Source**, then manually run
 **Publish Prod State** once. The page will be available at:

@@ -1,0 +1,121 @@
+---
+name: Reconcile Prod
+
+run-name: >-
+  Prod reconcile ·
+  ${{ github.event_name == 'schedule' && 'all approved components' ||
+      format('{0}@{1}', inputs.component, inputs.sha) }}
+
+"on":
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Declared component ID"
+        required: true
+      sha:
+        description: "SHA carrying this component's approval tag"
+        required: true
+
+jobs:
+  prepare:
+    name: Resolve approved component state
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_components: ${{ steps.components.outputs.has_components }}
+      matrix: ${{ steps.components.outputs.matrix }}
+    steps:
+      - name: Check out control plane and tags
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve component versions
+        id: components
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMPONENT: ${{ inputs.component }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          MATRIX=$(
+            python3 scripts/prod_components.py reconcile-matrix \
+              --event "$EVENT_NAME" \
+              --component "$COMPONENT" \
+              --sha "$SHA"
+          )
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          if [ "$(jq '.include | length' <<< "$MATRIX")" -gt 0 ]; then
+            echo "has_components=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_components=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  reconcile_component:
+    name: "Reconcile ${{ matrix.name }} at ${{ matrix.sha }}"
+    needs: prepare
+    if: needs.prepare.outputs.has_components == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: prod-reconcile
+      queue: max
+    permissions:
+      contents: read
+    steps:
+      - name: Check out approved component SHA
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify exact component approval
+        env:
+          COMPONENT: ${{ matrix.id }}
+          SHA: ${{ matrix.sha }}
+        run: |
+          TAG="prod-approved/${COMPONENT}/${SHA:0:7}"
+          TAG_SHA=$(git rev-list -n 1 "$TAG")
+          if [ "$TAG_SHA" != "$SHA" ]; then
+            echo "::error::$TAG points to $TAG_SHA, not $SHA"
+            exit 1
+          fi
+
+      - name: Export declared component environment
+        env:
+          COMPONENT_ENV_JSON: ${{ matrix.env_json }}
+          PROD_SECRET_1_ENV: ${{ matrix.secret_1_env }}
+          PROD_SECRET_1_VALUE: ${{ secrets[matrix.secret_1_name] }}
+          PROD_SECRET_2_ENV: ${{ matrix.secret_2_env }}
+          PROD_SECRET_2_VALUE: ${{ secrets[matrix.secret_2_name] }}
+          PROD_SECRET_3_ENV: ${{ matrix.secret_3_env }}
+          PROD_SECRET_3_VALUE: ${{ secrets[matrix.secret_3_name] }}
+          PROD_SECRET_4_ENV: ${{ matrix.secret_4_env }}
+          PROD_SECRET_4_VALUE: ${{ secrets[matrix.secret_4_name] }}
+          PROD_SECRET_5_ENV: ${{ matrix.secret_5_env }}
+          PROD_SECRET_5_VALUE: ${{ secrets[matrix.secret_5_name] }}
+          PROD_SECRET_6_ENV: ${{ matrix.secret_6_env }}
+          PROD_SECRET_6_VALUE: ${{ secrets[matrix.secret_6_name] }}
+          PROD_SECRET_7_ENV: ${{ matrix.secret_7_env }}
+          PROD_SECRET_7_VALUE: ${{ secrets[matrix.secret_7_name] }}
+          PROD_SECRET_8_ENV: ${{ matrix.secret_8_env }}
+          PROD_SECRET_8_VALUE: ${{ secrets[matrix.secret_8_name] }}
+        run: python3 scripts/prod_components.py export-env
+
+      - name: Install Ansible
+        run: python3 -m pip install ansible-core
+
+      - name: Run declared component
+        working-directory: ansible
+        env:
+          LAB_STAGE: prod
+          INVENTORY: ${{ matrix.inventory }}
+          PLAYBOOK: ${{ matrix.playbook }}
+          LIMIT: ${{ matrix.limit }}
+        run: ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --limit "$LIMIT"

@@ -1,0 +1,27 @@
+{
+  "scheduled_reconcile_enabled": false,
+  "components": [
+    {
+      "id": "idmz-base",
+      "name": "iDMZ base",
+      "inventory": "inventory/prod/hosts.yml",
+      "playbook": "playbooks/idmz_base.yml",
+      "limit": "lab",
+      "env": {
+        "LAB_COMPONENT": "idmz-base"
+      },
+      "secret_env": []
+    },
+    {
+      "id": "nginx-proxy",
+      "name": "nginx proxy",
+      "inventory": "inventory/prod/hosts.yml",
+      "playbook": "playbooks/nginx-proxy.yml",
+      "limit": "lab",
+      "env": {
+        "LAB_COMPONENT": "nginx-proxy"
+      },
+      "secret_env": []
+    }
+  ]
+}

@@ -1,0 +1,173 @@
+---
+name: Reconcile Nonprod
+
+run-name: "Validate all components at ${{ github.sha }}"
+
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    name: Load component matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.components.outputs.matrix }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate and load components
+        id: components
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/prod_components.py validate
+          MATRIX=$(python3 scripts/prod_components.py head-matrix --sha "$HEAD_SHA")
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  reconcile_nonprod_base:
+    name: "nonprod-base · ${{ matrix.name }}"
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: nonprod-reconcile
+      queue: max
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate SHA
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.sha }}
+
+      - name: Export declared component environment
+        env:
+          COMPONENT_ENV_JSON: ${{ matrix.env_json }}
+        run: python3 scripts/prod_components.py export-env
+
+      - name: Install Ansible
+        run: python3 -m pip install ansible-core
+
+      - name: Run component in nonprod-base
+        working-directory: ansible
+        env:
+          LAB_STAGE: nonprod-base
+          PLAYBOOK: ${{ matrix.playbook }}
+          LIMIT: ${{ matrix.limit }}
+        run: >-
+          ansible-playbook -i inventory/nonprod-base/hosts.yml
+          "$PLAYBOOK" --limit "$LIMIT"
+
+  reconcile_dev:
+    name: "dev · ${{ matrix.name }}"
+    needs: [prepare, reconcile_nonprod_base]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: nonprod-reconcile
+      queue: max
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate SHA
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.sha }}
+
+      - name: Export declared component environment
+        env:
+          COMPONENT_ENV_JSON: ${{ matrix.env_json }}
+        run: python3 scripts/prod_components.py export-env
+
+      - name: Install Ansible
+        run: python3 -m pip install ansible-core
+
+      - name: Run component in dev
+        working-directory: ansible
+        env:
+          LAB_STAGE: dev
+          PLAYBOOK: ${{ matrix.playbook }}
+          LIMIT: ${{ matrix.limit }}
+        run: >-
+          ansible-playbook -i inventory/dev/hosts.yml
+          "$PLAYBOOK" --limit "$LIMIT"
+
+  reconcile_test:
+    name: "test · ${{ matrix.name }}"
+    needs: [prepare, reconcile_dev]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: nonprod-reconcile
+      queue: max
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate SHA
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.sha }}
+
+      - name: Export declared component environment
+        env:
+          COMPONENT_ENV_JSON: ${{ matrix.env_json }}
+        run: python3 scripts/prod_components.py export-env
+
+      - name: Install Ansible
+        run: python3 -m pip install ansible-core
+
+      - name: Run component in test
+        working-directory: ansible
+        env:
+          LAB_STAGE: test
+          PLAYBOOK: ${{ matrix.playbook }}
+          LIMIT: ${{ matrix.limit }}
+        run: >-
+          ansible-playbook -i inventory/test/hosts.yml
+          "$PLAYBOOK" --limit "$LIMIT"
+
+  request_prod_approval:
+    name: "Request ${{ matrix.name }} approval"
+    needs: [prepare, reconcile_test]
+    if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch component approval workflow
+        uses: actions/github-script@v8
+        env:
+          COMPONENT: ${{ matrix.id }}
+          HEAD_SHA: ${{ matrix.sha }}
+        with:
+          script: |
+            await github.request(
+              'POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches',
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'request_prod_approval.yml',
+                ref: context.payload.repository.default_branch,
+                inputs: {
+                  component: process.env.COMPONENT,
+                  head_sha: process.env.HEAD_SHA,
+                },
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+              }
+            );

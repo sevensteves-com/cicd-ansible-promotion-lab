@@ -1,0 +1,41 @@
+---
+name: Lint and Validate
+
+"on":
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Validate lab
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install validation tools
+        run: pip install ansible-core ruff yamllint
+
+      - name: Validate manifest and Python
+        run: |
+          python scripts/prod_components.py validate
+          ruff check scripts/
+
+      - name: Lint YAML
+        run: yamllint .github/workflows ansible
+
+      - name: Syntax check declared playbooks
+        run: |
+          jq -r '.components[] | [.inventory, .playbook] | @tsv' \
+            .github/prod-components.json |
+          while IFS=$'\t' read -r inventory playbook; do
+            ansible-playbook -i "ansible/$inventory" \
+              "ansible/$playbook" --syntax-check
+          done

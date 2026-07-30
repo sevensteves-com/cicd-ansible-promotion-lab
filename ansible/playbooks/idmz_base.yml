@@ -1,0 +1,16 @@
+---
+- name: Reconcile iDMZ base lab component
+  hosts: lab
+  gather_facts: false
+
+  vars:
+    release_marker: "idmz-base-v1"
+
+  tasks:
+    - name: Show independently promoted iDMZ base version
+      ansible.builtin.debug:
+        msg:
+          stage: "{{ lookup('ansible.builtin.env', 'LAB_STAGE') }}"
+          component: "{{ lookup('ansible.builtin.env', 'LAB_COMPONENT') }}"
+          marker: "{{ release_marker }}"
+          commit: "{{ lookup('ansible.builtin.env', 'GITHUB_SHA') }}"

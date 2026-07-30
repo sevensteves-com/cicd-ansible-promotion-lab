@@ -1,0 +1,131 @@
+---
+name: Request Prod Approval
+
+run-name: "Approve ${{ inputs.component }} at ${{ inputs.head_sha }}"
+
+"on":
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Declared component to approve"
+        required: true
+      head_sha:
+        description: "SHA that passed nonprod-base, dev, and test"
+        required: true
+
+concurrency:
+  group: prod-approval-${{ inputs.component }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Validate component request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      component: ${{ steps.component.outputs.component }}
+    steps:
+      - name: Check out validated SHA
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve declared component
+        id: component
+        env:
+          COMPONENT: ${{ inputs.component }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          MATRIX=$(python3 scripts/prod_components.py head-matrix --sha "$HEAD_SHA")
+          ITEM=$(
+            jq -c --arg component "$COMPONENT" \
+              '.include[] | select(.id == $component)' <<< "$MATRIX"
+          )
+          if [ -z "$ITEM" ]; then
+            echo "::error::$COMPONENT is not declared at $HEAD_SHA"
+            exit 1
+          fi
+          echo "component=$ITEM" >> "$GITHUB_OUTPUT"
+
+  approve_component:
+    name: "Approve ${{ inputs.component }}"
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Verify prod environment is protected
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const response = await github.request(
+              'GET /repos/{owner}/{repo}/environments/{environment_name}',
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                environment_name: 'prod',
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+              }
+            );
+            const reviewerRule = response.data.protection_rules?.find(
+              rule => rule.type === 'required_reviewers'
+            );
+            if (!reviewerRule || reviewerRule.reviewers.length === 0) {
+              core.setFailed('prod has no required reviewers');
+            }
+
+      - name: Check out validated SHA
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Create immutable component approval tag
+        env:
+          COMPONENT: ${{ inputs.component }}
+          SHA: ${{ inputs.head_sha }}
+        run: |
+          TAG="prod-approved/${COMPONENT}/${SHA:0:7}"
+
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            EXISTING_SHA=$(git rev-list -n 1 "$TAG")
+            if [ "$EXISTING_SHA" != "$SHA" ]; then
+              echo "::error::Existing $TAG points to $EXISTING_SHA, not $SHA"
+              exit 1
+            fi
+            echo "$TAG already approves $SHA"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$SHA" -m "Approve $COMPONENT at $SHA"
+          git push origin "$TAG"
+
+      - name: Dispatch exact component reconcile
+        uses: actions/github-script@v8
+        env:
+          COMPONENT: ${{ inputs.component }}
+          SHA: ${{ inputs.head_sha }}
+        with:
+          script: |
+            await github.request(
+              'POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches',
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'reconcile_prod.yml',
+                ref: context.payload.repository.default_branch,
+                inputs: {
+                  component: process.env.COMPONENT,
+                  sha: process.env.SHA,
+                },
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+              }
+            );

@@ -3,9 +3,6 @@ name: Publish Prod State
 
 "on":
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Reconcile Prod"]
-    types: [completed]
   push:
     branches: [main]
     paths:

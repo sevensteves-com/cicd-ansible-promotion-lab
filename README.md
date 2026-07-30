@@ -83,9 +83,16 @@ The production workflow records two different immutable facts:
 - `prod-applied/<component>/<run-id>-<attempt>-<short-sha>` is created only
   after that component's Ansible run succeeds.
 
-The GitHub Pages dashboard plots both markers against `main`, and includes an
-exact table plus a machine-readable `state.json`. An approval whose reconcile
-fails therefore remains visibly pending.
+The workflows also maintain lightweight
+`prod-current/<component>/{approved,applied}` refs as a read model. The
+immutable tags remain the audit history; only these current-state refs move.
+
+The GitHub Pages dashboard queries the current refs and recent `main` commits
+directly from GitHub's public API when it loads, every five minutes, and when
+**Refresh live state** is selected. Pages deployment is therefore only for
+dashboard code changes, not production data changes. The build-time
+`state.json` is a fallback snapshot, not the live data source. An approval
+whose reconcile fails remains visibly pending.
 
 After merging this feature, select **GitHub Actions** under
 **Settings → Pages → Build and deployment → Source**, then manually run

@@ -31,6 +31,7 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --output-dir /tmp/prod-state-site
           test -s /tmp/prod-state-site/index.html
+          test -s /tmp/prod-state-site/dashboard.js
           test -s /tmp/prod-state-site/state.json
 
       - name: Lint YAML

@@ -132,3 +132,12 @@ jobs:
           git tag --annotate "$TAG" "$SHA" \
             --message "Successfully applied ${COMPONENT} at ${SHA}"
           git push origin "refs/tags/${TAG}"
+
+      - name: Update live applied version
+        env:
+          COMPONENT: ${{ matrix.id }}
+          SHA: ${{ matrix.sha }}
+        run: |
+          TAG="prod-current/${COMPONENT}/applied"
+          git tag --force "$TAG" "$SHA"
+          git push --force origin "refs/tags/${TAG}"

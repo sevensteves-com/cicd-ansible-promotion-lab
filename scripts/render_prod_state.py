@@ -15,6 +15,253 @@ from pathlib import Path
 
 MANIFEST_PATH = Path(".github/prod-components.json")
 
+DASHBOARD_JAVASCRIPT = r"""
+(() => {
+  "use strict";
+
+  const config = window.PROD_STATE_CONFIG;
+  const apiRoot = `https://api.github.com/repos/${config.repository}`;
+  const refreshButton = document.getElementById("refresh-live-state");
+  const sourceStatus = document.getElementById("source-status");
+  const chart = document.getElementById("chart");
+  const tableBody = document.getElementById("state-table-body");
+  const mainLink = document.getElementById("main-link");
+  const lastRefresh = document.getElementById("last-refresh");
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  async function api(path) {
+    const response = await fetch(`${apiRoot}${path}`, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub API returned ${response.status}`);
+    }
+    return response.json();
+  }
+
+  function currentRefs(refs) {
+    const versions = new Map();
+    for (const ref of refs) {
+      const match = ref.ref.match(
+        /^refs\/tags\/prod-current\/([^/]+)\/(approved|applied)$/
+      );
+      if (!match || ref.object.type !== "commit") {
+        continue;
+      }
+      const [, component, kind] = match;
+      const state = versions.get(component) || {};
+      state[kind] = {sha: ref.object.sha, source: "live"};
+      versions.set(component, state);
+    }
+    return versions;
+  }
+
+  function componentStates(refs, commits) {
+    const live = currentRefs(refs);
+    let usedFallback = false;
+    const states = config.components.map((component) => {
+      const current = live.get(component.id) || {};
+      const snapshot = config.snapshot[component.id] || {};
+      const approved = current.approved || snapshot.approved;
+      const applied = current.applied || snapshot.applied;
+      if ((!current.approved && snapshot.approved) ||
+          (!current.applied && snapshot.applied)) {
+        usedFallback = true;
+      }
+      const approvedDistance = approved
+        ? commits.findIndex((commit) => commit.sha === approved.sha)
+        : null;
+      const appliedDistance = applied
+        ? commits.findIndex((commit) => commit.sha === applied.sha)
+        : null;
+      let status = "Not approved or applied";
+      let statusKind = "unknown";
+      if (!approved && !applied) {
+        status = "Not approved or applied";
+      } else if (approved && !applied) {
+        status = "Approved; awaiting first successful apply";
+        statusKind = "pending";
+      } else if (!approved && applied) {
+        status = "Applied marker exists without a current approval";
+        statusKind = "warning";
+      } else if (approved.sha !== applied.sha) {
+        status = "Newer approval is awaiting a successful apply";
+        statusKind = "pending";
+      } else if (approvedDistance === 0) {
+        status = "Production matches its latest approval and main";
+        statusKind = "current";
+      } else if (approvedDistance > 0) {
+        const suffix = approvedDistance === 1 ? "" : "s";
+        status = `Production matches its approval; main is ` +
+          `${approvedDistance} commit${suffix} ahead`;
+        statusKind = "current";
+      } else {
+        status = "Applied commit is outside the displayed main history";
+        statusKind = "warning";
+      }
+      return {
+        ...component,
+        approved,
+        applied,
+        approvedDistance,
+        appliedDistance,
+        status,
+        statusKind,
+      };
+    });
+    return {states, usedFallback};
+  }
+
+  function xPosition(distance, maxDistance) {
+    const left = 225;
+    const right = 1050;
+    if (distance === null || distance < 0) {
+      return left;
+    }
+    return right -
+      ((Math.min(distance, maxDistance) / maxDistance) * (right - left));
+  }
+
+  function renderChart(states, commits) {
+    const distances = states.flatMap((state) =>
+      [state.approvedDistance, state.appliedDistance]
+        .filter((distance) => distance !== null && distance >= 0)
+    );
+    const maxDistance = Math.max(6, ...distances);
+    const rowHeight = 92;
+    const height = 76 + (states.length * rowHeight);
+    const lines = [
+      `<svg viewBox="0 0 1100 ${height}" role="img" ` +
+        `aria-label="Live production component versions across main history">`,
+      '<text x="225" y="24" class="axis-label">older</text>',
+      `<text x="1050" y="24" text-anchor="end" class="axis-label">` +
+        `main · ${escapeHtml(commits[0].sha.slice(0, 7))}</text>`,
+    ];
+    const tickStep = Math.max(1, Math.ceil(maxDistance / 10));
+    for (let distance = 0; distance <= maxDistance; distance += tickStep) {
+      const x = xPosition(distance, maxDistance);
+      const commit = commits[distance];
+      lines.push(
+        `<line x1="${x}" y1="36" x2="${x}" y2="${height - 18}" ` +
+          'class="grid-line"/>'
+      );
+      if (commit) {
+        lines.push(
+          `<text x="${x}" y="49" text-anchor="middle" ` +
+            `class="commit-label">${escapeHtml(commit.sha.slice(0, 7))}</text>`
+        );
+      }
+    }
+    states.forEach((state, index) => {
+      const y = 84 + (index * rowHeight);
+      const approvedX = xPosition(state.approvedDistance, maxDistance);
+      const appliedX = xPosition(state.appliedDistance, maxDistance);
+      lines.push(
+        `<text x="12" y="${y + 5}" class="component-name">` +
+          `${escapeHtml(state.name)}</text>`,
+        `<line x1="225" y1="${y}" x2="1050" y2="${y}" class="rail"/>`
+      );
+      if (state.applied) {
+        lines.push(
+          `<line x1="225" y1="${y}" x2="${appliedX}" y2="${y}" ` +
+            'class="applied-line"/>',
+          `<circle cx="${appliedX}" cy="${y}" r="8" ` +
+            'class="applied-marker"/>',
+          `<text x="${appliedX}" y="${y - 15}" text-anchor="middle" ` +
+            `class="marker-label">applied ` +
+            `${escapeHtml(state.applied.sha.slice(0, 7))}</text>`
+        );
+      }
+      if (state.approved) {
+        if (state.applied && state.applied.sha !== state.approved.sha) {
+          lines.push(
+            `<line x1="${appliedX}" y1="${y}" x2="${approvedX}" y2="${y}" ` +
+              'class="pending-line"/>'
+          );
+        }
+        const markerClass = state.applied &&
+          state.applied.sha === state.approved.sha
+          ? "approved-current"
+          : "approved-pending";
+        const labelY = state.applied ? y + 27 : y - 15;
+        lines.push(
+          `<path d="M ${approvedX} ${y - 10} l 10 10 l -10 10 ` +
+            `l -10 -10 z" class="${markerClass}"/>`,
+          `<text x="${approvedX}" y="${labelY}" text-anchor="middle" ` +
+            `class="marker-label">approved ` +
+            `${escapeHtml(state.approved.sha.slice(0, 7))}</text>`
+        );
+      }
+    });
+    lines.push("</svg>");
+    chart.innerHTML = lines.join("");
+  }
+
+  function versionLink(marker) {
+    if (!marker) {
+      return '<span class="muted">none</span>';
+    }
+    const sha = escapeHtml(marker.sha);
+    return `<a href="https://github.com/${escapeHtml(config.repository)}` +
+      `/commit/${sha}">${sha.slice(0, 7)}</a>`;
+  }
+
+  function renderTable(states) {
+    tableBody.innerHTML = states.map((state) =>
+      `<tr><th>${escapeHtml(state.name)}` +
+      `<small>${escapeHtml(state.id)}</small></th>` +
+      `<td>${versionLink(state.applied)}</td>` +
+      `<td>${versionLink(state.approved)}</td>` +
+      `<td><span class="status ${escapeHtml(state.statusKind)}">` +
+      `${escapeHtml(state.status)}</span></td></tr>`
+    ).join("");
+  }
+
+  async function refresh() {
+    refreshButton.disabled = true;
+    sourceStatus.textContent = "Loading live GitHub refs…";
+    try {
+      const [refs, commits] = await Promise.all([
+        api("/git/matching-refs/tags/prod-current/"),
+        api("/commits?sha=main&per_page=30"),
+      ]);
+      const {states, usedFallback} = componentStates(refs, commits);
+      renderChart(states, commits);
+      renderTable(states);
+      const now = new Date();
+      sourceStatus.textContent = usedFallback
+        ? "Live refs with build-snapshot fallback"
+        : "Live from GitHub refs";
+      lastRefresh.textContent = `Live data refreshed ${now.toLocaleString()}`;
+      mainLink.href =
+        `https://github.com/${config.repository}/commit/${commits[0].sha}`;
+      mainLink.textContent = commits[0].sha.slice(0, 7);
+    } catch (error) {
+      sourceStatus.textContent =
+        `Live refresh failed; showing build snapshot (${error.message})`;
+    } finally {
+      refreshButton.disabled = false;
+    }
+  }
+
+  refreshButton.addEventListener("click", refresh);
+  refresh();
+  window.setInterval(refresh, 300000);
+})();
+"""
+
 
 class RenderError(RuntimeError):
     """Raised when production state cannot be rendered."""
@@ -258,6 +505,22 @@ def render_html(
     repository: str,
     generated_at: str,
 ) -> str:
+    live_config = {
+        "repository": repository,
+        "components": [
+            {"id": state.component_id, "name": state.name} for state in states
+        ],
+        "snapshot": {
+            state.component_id: {
+                "approved": {"sha": state.approved.sha} if state.approved else None,
+                "applied": {"sha": state.applied.sha} if state.applied else None,
+            }
+            for state in states
+        },
+    }
+    live_config_json = json.dumps(live_config, separators=(",", ":")).replace(
+        "</", "<\\/"
+    )
     distances = [
         distance
         for state in states
@@ -295,7 +558,6 @@ def render_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="300">
   <title>Production component state</title>
   <style>
     :root {{
@@ -340,6 +602,23 @@ def render_html(
     }}
     .legend .applied::before {{ background: var(--green); }}
     .legend .approved::before {{ background: var(--amber); }}
+    .live-controls {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }}
+    button {{
+      padding: 7px 12px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: #21262d;
+      color: var(--text);
+      cursor: pointer;
+    }}
+    button:disabled {{ cursor: wait; opacity: .6; }}
     svg {{ min-width: 820px; width: 100%; height: auto; }}
     svg text {{ fill: var(--text); font-family: system-ui, sans-serif; }}
     .axis-label, .commit-label, .marker-label {{ fill: var(--muted); }}
@@ -375,12 +654,16 @@ def render_html(
       most recently completed successfully.
     </p>
     <section class="panel">
+      <div class="live-controls">
+        <strong id="source-status">Build snapshot; loading live refs…</strong>
+        <button id="refresh-live-state" type="button">Refresh live state</button>
+      </div>
       <div class="legend">
         <span class="applied">Successfully applied</span>
         <span class="approved">Approved, not yet applied</span>
         <span>Main history</span>
       </div>
-      {chart}
+      <div id="chart">{chart}</div>
     </section>
     <section class="panel">
       <table>
@@ -392,17 +675,22 @@ def render_html(
             <th>State</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="state-table-body">
           {''.join(rows)}
         </tbody>
       </table>
     </section>
     <footer>
-      Main <a href="https://github.com/{html.escape(repository)}/commit/{main_sha}">
-      {html.escape(main_sha[:7])}</a> · Generated {html.escape(generated_at)} ·
-      <a href="state.json">raw state</a>
+      Main <a id="main-link"
+      href="https://github.com/{html.escape(repository)}/commit/{main_sha}">
+      {html.escape(main_sha[:7])}</a> ·
+      <span id="last-refresh">Build snapshot generated
+      {html.escape(generated_at)}</span> ·
+      <a href="state.json">build snapshot JSON</a>
     </footer>
   </main>
+  <script>window.PROD_STATE_CONFIG = {live_config_json};</script>
+  <script src="dashboard.js"></script>
 </body>
 </html>
 """
@@ -426,6 +714,10 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "index.html").write_text(
         render_html(states, main_sha, args.repository, generated_at),
+        encoding="utf-8",
+    )
+    (args.output_dir / "dashboard.js").write_text(
+        DASHBOARD_JAVASCRIPT.strip() + "\n",
         encoding="utf-8",
     )
     raw_state = {

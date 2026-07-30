@@ -129,3 +129,29 @@ jobs:
                 headers: { 'X-GitHub-Api-Version': '2022-11-28' },
               }
             );
+
+  publish_rejected_state:
+    name: Refresh rejected approval state
+    needs: [prepare, approve_component]
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.approve_component.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch dashboard publish
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.request(
+              'POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches',
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'publish-prod-state.yml',
+                ref: context.payload.repository.default_branch,
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+              }
+            );

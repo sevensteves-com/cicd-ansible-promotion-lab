@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 
@@ -31,6 +32,8 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Render production state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python scripts/render_prod_state.py \
             --repository "$GITHUB_REPOSITORY" \

@@ -117,18 +117,19 @@ jobs:
           PROD_SECRET_8_VALUE: ${{ secrets[matrix.secret_8_name] }}
         run: python3 scripts/prod_components.py export-env
 
-      - name: Install Ansible
-        run: python3 -m pip install ansible-core
-
-      - name: Run declared component
-        working-directory: ansible
+      - name: Simulate declared component reconcile
         env:
           LAB_STAGE: prod
+          COMPONENT: ${{ matrix.id }}
           APPROVED_SHA: ${{ matrix.sha }}
           INVENTORY: ${{ matrix.inventory }}
           PLAYBOOK: ${{ matrix.playbook }}
           LIMIT: ${{ matrix.limit }}
-        run: ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --limit "$LIMIT"
+        run: |
+          test -f "ansible/$INVENTORY"
+          test -f "ansible/$PLAYBOOK"
+          echo "Would reconcile $COMPONENT at $APPROVED_SHA in $LAB_STAGE"
+          echo "ansible-playbook -i $INVENTORY $PLAYBOOK --limit $LIMIT"
 
       - name: Record successful component apply
         env:

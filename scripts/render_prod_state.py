@@ -700,6 +700,7 @@ def load_approval_events(repository: str, token: str | None) -> dict[str, dict]:
                 "component": component,
                 "sha": sha,
                 "runId": run["id"],
+                "runAttempt": run.get("run_attempt", 1),
                 "status": run["status"],
                 "conclusion": run["conclusion"],
                 "url": run["html_url"],

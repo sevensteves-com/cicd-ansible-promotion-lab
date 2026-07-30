@@ -281,13 +281,24 @@ def approval_matrix(manifest: dict[str, Any], sha: str) -> dict[str, Any]:
     for component in manifest["components"]:
         ensure_component_files(component)
         applied_sha = latest_applied_sha(component["id"])
+        baseline_sha, baseline_kind = latest_decision_baseline(component["id"])
         changed, reason = component_changed_since_apply(
             component,
             sha,
-            applied_sha,
+            baseline_sha,
         )
+        if baseline_kind == "rejected":
+            reason = (
+                f"{reason} since rejection"
+                if changed
+                else "deployment inputs are unchanged since rejection"
+            )
         state = "changed" if changed else "unchanged"
-        baseline = applied_sha[:7] if applied_sha else "never applied"
+        baseline = (
+            f"{baseline_kind} {baseline_sha[:7]}"
+            if baseline_sha
+            else "no prior decision"
+        )
         print(
             f"{component['id']}: {state} versus {baseline} ({reason})",
             file=sys.stderr,
@@ -356,7 +367,19 @@ def latest_applied_sha(component_id: str) -> str | None:
     return latest_component_tag_sha("prod-applied", component_id)
 
 
+def latest_rejected_sha(component_id: str) -> str | None:
+    return latest_component_tag_sha("prod-rejected", component_id)
+
+
 def latest_component_tag_sha(tag_prefix: str, component_id: str) -> str | None:
+    marker = latest_component_tag_marker(tag_prefix, component_id)
+    return marker[0] if marker else None
+
+
+def latest_component_tag_marker(
+    tag_prefix: str,
+    component_id: str,
+) -> tuple[str, int] | None:
     refs = run_git(
         "for-each-ref",
         "--sort=-taggerdate",
@@ -371,8 +394,28 @@ def latest_component_tag_sha(tag_prefix: str, component_id: str) -> str | None:
         # treating the commit date as an approval timestamp.
         if not tagger_timestamp:
             continue
-        return resolve_sha(f"refs/tags/{tag}")
+        suffix = tag.rsplit("/", 1)[-1]
+        event_match = re.fullmatch(r"([0-9]+)-[0-9]+-[0-9a-f]{7}", suffix)
+        event_order = (
+            int(event_match.group(1))
+            if event_match
+            else int(tagger_timestamp)
+        )
+        return resolve_sha(f"refs/tags/{tag}"), event_order
     return None
+
+
+def latest_decision_baseline(component_id: str) -> tuple[str | None, str | None]:
+    approved = latest_component_tag_marker("prod-approved", component_id)
+    rejected = latest_component_tag_marker("prod-rejected", component_id)
+    if rejected and (not approved or rejected[1] > approved[1]):
+        return rejected[0], "rejected"
+    if approved:
+        return approved[0], "approved"
+    applied = latest_component_tag_marker("prod-applied", component_id)
+    if applied:
+        return applied[0], "applied"
+    return None, None
 
 
 def deployment_configuration(component: dict[str, Any]) -> dict[str, Any]:

@@ -110,9 +110,17 @@ The production workflow records two different immutable facts:
   component version passed the production approval gate.
 - `prod-applied/<component>/<run-id>-<attempt>-<short-sha>` is created only
   after that component's simulated reconcile succeeds.
+- `prod-rejected/<component>/<run-id>-<attempt>-<short-sha>` records a rejected
+  environment approval as a durable decision baseline.
 
 The run ID makes every approval an ordered event, including re-approval of an
 older SHA for rollback. Existing short-SHA-only approval tags remain valid.
+
+After rejection, later `main` commits do not request the same playbook again
+while its tracked deployment inputs remain identical. A new approval is
+requested only after that playbook, its declaration, or one of its declared
+dependency paths changes. A later approval supersedes the rejection; scheduled
+reconciliation of an older approved version does not.
 
 The GitHub Pages dashboard queries the immutable tags, waiting production
 approval workflow runs, and recent `main` commits directly from GitHub's

@@ -94,32 +94,72 @@ DASHBOARD_JAVASCRIPT = r"""
     return versions;
   }
 
-  function waitingApprovals(runs) {
-    const approvals = new Map();
-    for (const run of runs) {
+  async function latestApprovalEvents() {
+    const response = await api(
+      "/actions/workflows/request_prod_approval.yml/runs?per_page=100"
+    );
+    const latestRuns = new Map();
+    for (const run of response.workflow_runs) {
       const match = run.display_title.match(
         /^Approve ([a-z0-9](?:[a-z0-9-]*[a-z0-9])?) at ([0-9a-f]{40})$/
       );
-      if (!match || run.status !== "waiting") {
+      if (!match) {
         continue;
       }
       const [, component, sha] = match;
-      const existing = approvals.get(component);
+      const existing = latestRuns.get(component);
       if (!existing || run.id > existing.runId) {
-        approvals.set(component, {
+        latestRuns.set(component, {
+          component,
           sha,
           runId: run.id,
+          status: run.status,
+          conclusion: run.conclusion,
           url: run.html_url,
-          source: "live",
         });
       }
     }
-    return approvals;
+
+    const events = new Map();
+    await Promise.all([...latestRuns.values()].map(async (run) => {
+      if (run.status === "waiting") {
+        events.set(run.component, {...run, kind: "waiting"});
+        return;
+      }
+      if (run.status !== "completed" || run.conclusion !== "failure") {
+        return;
+      }
+
+      const cacheKey = `approval-run-${run.runId}`;
+      let kind = null;
+      try {
+        kind = window.sessionStorage.getItem(cacheKey);
+      } catch {
+        // Storage may be unavailable for hardened browser configurations.
+      }
+      if (!kind) {
+        const jobs = await api(`/actions/runs/${run.runId}/jobs?per_page=20`);
+        const approvalJob = jobs.jobs.find(
+          (job) => job.name === `Approve ${run.component}`
+        );
+        kind = approvalJob &&
+          approvalJob.conclusion === "failure" &&
+          (approvalJob.steps || []).length === 0
+          ? "rejected"
+          : "failed";
+        try {
+          window.sessionStorage.setItem(cacheKey, kind);
+        } catch {
+          // The classification remains valid for this refresh without storage.
+        }
+      }
+      events.set(run.component, {...run, kind});
+    }));
+    return events;
   }
 
-  function componentStates(tags, commits, approvalRuns) {
+  function componentStates(tags, commits, approvalEvents) {
     const live = liveVersions(tags);
-    const waiting = waitingApprovals(approvalRuns);
     let usedFallback = false;
     const states = config.components.map((component) => {
       const current = live.get(component.id) || {};
@@ -136,7 +176,14 @@ DASHBOARD_JAVASCRIPT = r"""
       const appliedDistance = applied
         ? commits.findIndex((commit) => commit.sha === applied.sha)
         : null;
-      const waitingApproval = waiting.get(component.id) || null;
+      const approvalEvent = approvalEvents.get(component.id) || null;
+      const waitingApproval = approvalEvent?.kind === "waiting"
+        ? approvalEvent
+        : null;
+      const rawRejectedApproval = (
+        approvalEvent?.kind === "rejected" ||
+        approvalEvent?.kind === "failed"
+      ) ? approvalEvent : null;
       const waitingDistance = waitingApproval
         ? commits.findIndex((commit) => commit.sha === waitingApproval.sha)
         : null;
@@ -147,6 +194,13 @@ DASHBOARD_JAVASCRIPT = r"""
       );
       const mainChanged = semanticFresh ? snapshot.mainChanged : null;
       const changeReason = semanticFresh ? snapshot.changeReason : null;
+      const rejectedApproval = (
+        rawRejectedApproval &&
+        !(applied && mainChanged === false)
+      ) ? rawRejectedApproval : null;
+      const rejectedDistance = rejectedApproval
+        ? commits.findIndex((commit) => commit.sha === rejectedApproval.sha)
+        : null;
       const lastReconciledAt = (
         snapshot.applied &&
         applied &&
@@ -159,6 +213,14 @@ DASHBOARD_JAVASCRIPT = r"""
         status = `${waitingApproval.sha.slice(0, 7)} is awaiting production ` +
           `approval; production remains ${productionSha}`;
         statusKind = "pending";
+      } else if (rejectedApproval) {
+        const decision = rejectedApproval.kind === "rejected"
+          ? "was rejected"
+          : "approval workflow failed";
+        const productionSha = applied ? applied.sha.slice(0, 7) : "none";
+        status = `${rejectedApproval.sha.slice(0, 7)} ${decision}; ` +
+          `production remains ${productionSha}`;
+        statusKind = "rejected";
       } else if (!approved && !applied) {
         status = "Not approved or applied";
       } else if (approved && !applied) {
@@ -196,6 +258,8 @@ DASHBOARD_JAVASCRIPT = r"""
         appliedDistance,
         waitingApproval,
         waitingDistance,
+        rejectedApproval,
+        rejectedDistance,
         mainChanged,
         changeReason,
         lastReconciledAt,
@@ -218,7 +282,12 @@ DASHBOARD_JAVASCRIPT = r"""
 
   function renderChart(states, commits) {
     const distances = states.flatMap((state) =>
-      [state.approvedDistance, state.appliedDistance, state.waitingDistance]
+      [
+        state.approvedDistance,
+        state.appliedDistance,
+        state.waitingDistance,
+        state.rejectedDistance,
+      ]
         .filter((distance) => distance !== null && distance >= 0)
     );
     const maxDistance = Math.max(6, ...distances);
@@ -251,6 +320,7 @@ DASHBOARD_JAVASCRIPT = r"""
       const approvedX = xPosition(state.approvedDistance, maxDistance);
       const appliedX = xPosition(state.appliedDistance, maxDistance);
       const waitingX = xPosition(state.waitingDistance, maxDistance);
+      const rejectedX = xPosition(state.rejectedDistance, maxDistance);
       lines.push(
         `<text x="12" y="${y + 5}" class="component-name">` +
           `${escapeHtml(state.name)}</text>`,
@@ -316,6 +386,33 @@ DASHBOARD_JAVASCRIPT = r"""
             `${escapeHtml(state.waitingApproval.sha.slice(0, 7))}</text>`
         );
       }
+      if (state.rejectedApproval) {
+        const priorX = state.approved ? approvedX : appliedX;
+        const rejectedLabelX = state.rejectedDistance === 0
+          ? rejectedX - 7
+          : rejectedX;
+        const rejectedLabelAnchor = state.rejectedDistance === 0
+          ? "end"
+          : "middle";
+        if (state.approved || state.applied) {
+          lines.push(
+            `<line x1="${priorX}" y1="${y}" x2="${rejectedX}" y2="${y}" ` +
+              'class="approval-rejected-line"/>'
+          );
+        }
+        const label = state.rejectedApproval.kind === "rejected"
+          ? "rejected"
+          : "approval failed";
+        lines.push(
+          `<path d="M ${rejectedX - 9} ${y - 9} L ${rejectedX + 9} ${y + 9} ` +
+            `M ${rejectedX + 9} ${y - 9} L ${rejectedX - 9} ${y + 9}" ` +
+            'class="approval-rejected"/>',
+          `<text x="${rejectedLabelX}" y="${y - 15}" ` +
+            `text-anchor="${rejectedLabelAnchor}" ` +
+            `class="marker-label">${label} ` +
+            `${escapeHtml(state.rejectedApproval.sha.slice(0, 7))}</text>`
+        );
+      }
     });
     lines.push("</svg>");
     chart.innerHTML = lines.join("");
@@ -344,7 +441,7 @@ DASHBOARD_JAVASCRIPT = r"""
         : "") +
       `</td>` +
       `<td>${versionLink(state.approved)}</td>` +
-      `<td>${versionLink(state.waitingApproval)}</td>` +
+      `<td>${versionLink(state.waitingApproval || state.rejectedApproval)}</td>` +
       `<td><span class="status ${escapeHtml(state.statusKind)}">` +
       `${escapeHtml(state.status)}</span></td></tr>`
     ).join("");
@@ -354,25 +451,22 @@ DASHBOARD_JAVASCRIPT = r"""
     refreshButton.disabled = true;
     sourceStatus.textContent = "Loading immutable GitHub tags…";
     try {
-      const [tags, commits, approvalRuns] = await Promise.all([
+      const [tags, commits, approvalEvents] = await Promise.all([
         repositoryTags(),
         api("/commits?sha=main&per_page=30"),
-        api(
-          "/actions/workflows/request_prod_approval.yml/runs" +
-          "?per_page=100&status=waiting"
-        ),
+        latestApprovalEvents(),
       ]);
       const {states, usedFallback} = componentStates(
         tags,
         commits,
-        approvalRuns.workflow_runs
+        approvalEvents
       );
       renderChart(states, commits);
       renderTable(states);
       const now = new Date();
       sourceStatus.textContent = usedFallback
-        ? "Live tags and approval runs with build-snapshot fallback"
-        : "Live from GitHub tags and approval runs";
+        ? "Live tags and approval activity with build-snapshot fallback"
+        : "Live from GitHub tags and approval activity";
       lastRefresh.textContent = `Live data refreshed ${now.toLocaleString()}`;
       mainLink.href =
         `https://github.com/${config.repository}/commit/${commits[0].sha}`;
@@ -781,6 +875,7 @@ def render_html(
     .legend .applied::before {{ background: var(--green); }}
     .legend .approved::before {{ background: var(--blue); }}
     .legend .waiting::before {{ background: var(--amber); }}
+    .legend .rejected::before {{ background: var(--red); }}
     .live-controls {{
       display: flex;
       flex-wrap: wrap;
@@ -818,12 +913,23 @@ def render_html(
       stroke-width: 4;
       stroke-dasharray: 8 6;
     }}
+    .approval-rejected-line {{
+      stroke: var(--red);
+      stroke-width: 4;
+      stroke-dasharray: 8 6;
+    }}
     .applied-marker, .approved-current {{ fill: var(--green); }}
     .approved-pending {{ fill: var(--blue); }}
     .approval-waiting {{
       fill: var(--panel);
       stroke: var(--amber);
       stroke-width: 4;
+    }}
+    .approval-rejected {{
+      fill: none;
+      stroke: var(--red);
+      stroke-linecap: round;
+      stroke-width: 5;
     }}
     table {{ width: 100%; min-width: 760px; border-collapse: collapse; }}
     th, td {{ padding: 14px; border-bottom: 1px solid var(--border); text-align: left; }}
@@ -847,6 +953,7 @@ def render_html(
     }}
     .status.current::before {{ background: var(--green); }}
     .status.pending::before {{ background: var(--amber); }}
+    .status.rejected::before {{ background: var(--red); }}
     .status.warning::before {{ background: var(--red); }}
     footer {{ margin: 20px 2px; color: var(--muted); }}
   </style>
@@ -867,6 +974,7 @@ def render_html(
         <span class="applied">Successfully applied</span>
         <span class="approved">Approved, not yet applied</span>
         <span class="waiting">Awaiting prod approval</span>
+        <span class="rejected">Approval rejected</span>
         <span>Main history</span>
       </div>
       <div id="chart">{chart}</div>
@@ -878,7 +986,7 @@ def render_html(
             <th>Playbook</th>
             <th>Last applied / reconciled</th>
             <th>Latest approved</th>
-            <th>Awaiting approval</th>
+            <th>Latest approval event</th>
             <th>State</th>
           </tr>
         </thead>

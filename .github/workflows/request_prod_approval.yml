@@ -91,7 +91,7 @@ jobs:
           COMPONENT: ${{ inputs.component }}
           SHA: ${{ inputs.head_sha }}
         run: |
-          TAG="prod-approved/${COMPONENT}/${SHA:0:7}"
+          TAG="prod-approved/${COMPONENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${SHA:0:7}"
 
           if git show-ref --verify --quiet "refs/tags/$TAG"; then
             EXISTING_SHA=$(git rev-list -n 1 "$TAG")
@@ -107,15 +107,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" "$SHA" -m "Approve $COMPONENT at $SHA"
           git push origin "$TAG"
-
-      - name: Update live approved version
-        env:
-          COMPONENT: ${{ inputs.component }}
-          SHA: ${{ inputs.head_sha }}
-        run: |
-          TAG="prod-current/${COMPONENT}/approved"
-          git tag --force "$TAG" "$SHA"
-          git push --force origin "refs/tags/${TAG}"
 
       - name: Dispatch exact component reconcile
         uses: actions/github-script@v8

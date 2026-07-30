@@ -80,10 +80,19 @@ jobs:
           COMPONENT: ${{ matrix.id }}
           SHA: ${{ matrix.sha }}
         run: |
-          TAG="prod-approved/${COMPONENT}/${SHA:0:7}"
-          TAG_SHA=$(git rev-list -n 1 "$TAG")
-          if [ "$TAG_SHA" != "$SHA" ]; then
-            echo "::error::$TAG points to $TAG_SHA, not $SHA"
+          APPROVED=false
+          while IFS= read -r tag; do
+            suffix=${tag##*/}
+            if [[ ! "$suffix" =~ ^([0-9]+-[0-9]+-)?${SHA:0:7}$ ]]; then
+              continue
+            fi
+            if [ "$(git rev-list -n 1 "$tag")" = "$SHA" ]; then
+              APPROVED=true
+              break
+            fi
+          done < <(git tag --list "prod-approved/${COMPONENT}/*")
+          if [ "$APPROVED" != true ]; then
+            echo "::error::No exact approval tag for ${COMPONENT} at ${SHA}"
             exit 1
           fi
 
@@ -132,12 +141,3 @@ jobs:
           git tag --annotate "$TAG" "$SHA" \
             --message "Successfully applied ${COMPONENT} at ${SHA}"
           git push origin "refs/tags/${TAG}"
-
-      - name: Update live applied version
-        env:
-          COMPONENT: ${{ matrix.id }}
-          SHA: ${{ matrix.sha }}
-        run: |
-          TAG="prod-current/${COMPONENT}/applied"
-          git tag --force "$TAG" "$SHA"
-          git push --force origin "refs/tags/${TAG}"

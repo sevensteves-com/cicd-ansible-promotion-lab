@@ -280,15 +280,29 @@ def resolve_sha(value: str) -> str:
     return sha.lower()
 
 
-def approval_tag(component_id: str, sha: str) -> str:
-    return f"prod-approved/{component_id}/{sha[:7]}"
-
-
 def verify_approval_tag(component_id: str, sha: str) -> None:
-    tag = approval_tag(component_id, sha)
-    resolved = resolve_sha(f"refs/tags/{tag}")
-    if resolved != sha:
-        raise ManifestError(f"{tag} points to {resolved}, not requested SHA {sha}")
+    prefix = f"prod-approved/{component_id}/"
+    expected_suffix = sha[:7]
+    refs = run_git(
+        "for-each-ref",
+        "--format=%(refname:short)|%(taggerdate:unix)",
+        f"refs/tags/{prefix}*",
+    )
+    for line in refs.splitlines():
+        tag, _, tagger_timestamp = line.partition("|")
+        if not tagger_timestamp:
+            continue
+        tag_suffix = tag.removeprefix(prefix)
+        legacy_tag = tag_suffix == expected_suffix
+        event_tag = re.fullmatch(
+            rf"[0-9]+-[0-9]+-{re.escape(expected_suffix)}",
+            tag_suffix,
+        )
+        if (legacy_tag or event_tag) and resolve_sha(f"refs/tags/{tag}") == sha:
+            return
+    raise ManifestError(
+        f"no annotated {prefix} tag approves requested SHA {sha}"
+    )
 
 
 def latest_approved_sha(component_id: str) -> str | None:

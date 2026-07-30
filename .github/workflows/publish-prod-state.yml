@@ -11,11 +11,11 @@ name: Publish Prod State
       - "scripts/render_prod_state.py"
 
 concurrency:
-  group: github-pages
+  group: prod-state-dashboard-pages
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -40,28 +40,6 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --output-dir _site
 
-      - name: Initialize missing live state refs
-        run: |
-          jq -r '
-            .components[] |
-            .component_id as $component |
-            to_entries[] |
-            select(
-              (.key == "approved" or .key == "applied") and
-              .value != null
-            ) |
-            [$component, .key, .value.sha] |
-            @tsv
-          ' _site/state.json |
-          while IFS=$'\t' read -r component kind sha; do
-            tag="prod-current/${component}/${kind}"
-            if git show-ref --verify --quiet "refs/tags/${tag}"; then
-              continue
-            fi
-            git tag "$tag" "$sha"
-            git push origin "refs/tags/${tag}"
-          done
-
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
@@ -72,7 +50,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment:
-      name: github-pages
+      name: prod-state-dashboard
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy GitHub Pages

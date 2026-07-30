@@ -51,25 +51,45 @@ DASHBOARD_JAVASCRIPT = r"""
     return response.json();
   }
 
-  function currentRefs(refs) {
+  async function repositoryTags() {
+    const tags = [];
+    for (let page = 1; page <= 10; page += 1) {
+      const batch = await api(`/tags?per_page=100&page=${page}`);
+      tags.push(...batch);
+      if (batch.length < 100) {
+        return tags;
+      }
+    }
+    throw new Error("More than 1,000 production tags; narrow the API query");
+  }
+
+  function liveVersions(tags) {
     const versions = new Map();
-    for (const ref of refs) {
-      const match = ref.ref.match(
-        /^refs\/tags\/prod-current\/([^/]+)\/(approved|applied)$/
+    for (const tag of tags) {
+      const match = tag.name.match(
+        /^prod-(approved|applied)\/([^/]+)\/([0-9]+)-([0-9]+)-[0-9a-f]{7}$/
       );
-      if (!match || ref.object.type !== "commit") {
+      if (!match) {
         continue;
       }
-      const [, component, kind] = match;
+      const [, tagKind, component, runId, runAttempt] = match;
+      const kind = tagKind === "approved" ? "approved" : "applied";
+      const order = (Number(runId) * 1000) + Number(runAttempt);
       const state = versions.get(component) || {};
-      state[kind] = {sha: ref.object.sha, source: "live"};
+      if (!state[kind] || order > state[kind].order) {
+        state[kind] = {
+          sha: tag.commit.sha,
+          order,
+          source: "live",
+        };
+      }
       versions.set(component, state);
     }
     return versions;
   }
 
-  function componentStates(refs, commits) {
-    const live = currentRefs(refs);
+  function componentStates(tags, commits) {
+    const live = liveVersions(tags);
     let usedFallback = false;
     const states = config.components.map((component) => {
       const current = live.get(component.id) || {};
@@ -231,19 +251,19 @@ DASHBOARD_JAVASCRIPT = r"""
 
   async function refresh() {
     refreshButton.disabled = true;
-    sourceStatus.textContent = "Loading live GitHub refs…";
+    sourceStatus.textContent = "Loading immutable GitHub tags…";
     try {
-      const [refs, commits] = await Promise.all([
-        api("/git/matching-refs/tags/prod-current/"),
+      const [tags, commits] = await Promise.all([
+        repositoryTags(),
         api("/commits?sha=main&per_page=30"),
       ]);
-      const {states, usedFallback} = componentStates(refs, commits);
+      const {states, usedFallback} = componentStates(tags, commits);
       renderChart(states, commits);
       renderTable(states);
       const now = new Date();
       sourceStatus.textContent = usedFallback
-        ? "Live refs with build-snapshot fallback"
-        : "Live from GitHub refs";
+        ? "Live immutable tags with build-snapshot fallback"
+        : "Live from immutable GitHub tags";
       lastRefresh.textContent = `Live data refreshed ${now.toLocaleString()}`;
       mainLink.href =
         `https://github.com/${config.repository}/commit/${commits[0].sha}`;
@@ -655,7 +675,7 @@ def render_html(
     </p>
     <section class="panel">
       <div class="live-controls">
-        <strong id="source-status">Build snapshot; loading live refs…</strong>
+        <strong id="source-status">Build snapshot; loading live tags…</strong>
         <button id="refresh-live-state" type="button">Refresh live state</button>
       </div>
       <div class="legend">

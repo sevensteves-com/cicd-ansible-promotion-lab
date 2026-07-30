@@ -35,6 +35,12 @@ maps:
 | --- | --- | --- |
 | `idmz-base` | `playbooks/idmz_base.yml` | `inventory/prod/hosts.yml` |
 | `nginx-proxy` | `playbooks/nginx-proxy.yml` | `inventory/prod/hosts.yml` |
+| `edge-firewall` | `playbooks/edge-firewall.yml` | `inventory/prod/hosts.yml` |
+| `dns-resolver` | `playbooks/dns-resolver.yml` | `inventory/prod/hosts.yml` |
+| `certificate-sync` | `playbooks/certificate-sync.yml` | `inventory/prod/hosts.yml` |
+| `audit-forwarder` | `playbooks/audit-forwarder.yml` | `inventory/prod/hosts.yml` |
+| `bastion-access` | `playbooks/bastion-access.yml` | `inventory/prod/hosts.yml` |
+| `patch-baseline` | `playbooks/patch-baseline.yml` | `inventory/prod/hosts.yml` |
 
 Add or edit components in the manifest instead of copying workflow steps.
 

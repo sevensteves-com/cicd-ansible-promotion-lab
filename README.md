@@ -114,8 +114,10 @@ older SHA for rollback. Existing short-SHA-only approval tags remain valid.
 The GitHub Pages dashboard queries the immutable tags, waiting production
 approval workflow runs, and recent `main` commits directly from GitHub's
 public API when it loads, every five minutes, and when **Refresh live state**
-is selected. It displays awaiting approval, approved, and successfully
-applied as separate states.
+is selected. It displays awaiting approval, rejected, approved, and
+successfully applied as separate states. A rejection is identified by a
+failed environment-gated approval job with no executed workflow steps; other
+approval workflow failures are shown separately.
 
 The published snapshot also runs the same component comparison as approval
 selection. An applied SHA can lag behind `main` while still showing **Up to

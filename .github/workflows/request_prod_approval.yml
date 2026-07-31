@@ -86,27 +86,25 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # The workspace sits at the PR head, which is not approved yet and may
+      # not carry this tooling at all. Marker helpers always come from main.
+      - name: Check out marker tooling
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: .marker-tools
+          sparse-checkout: scripts/create_marker_tag.sh
+          sparse-checkout-cone-mode: false
+
       - name: Create immutable component approval tag
         env:
+          GH_TOKEN: ${{ github.token }}
           COMPONENT: ${{ inputs.component }}
           SHA: ${{ inputs.head_sha }}
         run: |
           TAG="prod-approved/${COMPONENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${SHA:0:7}"
-
-          if git show-ref --verify --quiet "refs/tags/$TAG"; then
-            EXISTING_SHA=$(git rev-list -n 1 "$TAG")
-            if [ "$EXISTING_SHA" != "$SHA" ]; then
-              echo "::error::Existing $TAG points to $EXISTING_SHA, not $SHA"
-              exit 1
-            fi
-            echo "$TAG already approves $SHA"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" "$SHA" -m "Approve $COMPONENT at $SHA"
-          git push origin "$TAG"
+          bash .marker-tools/scripts/create_marker_tag.sh "$TAG" "$SHA" \
+            "Approve ${COMPONENT} at ${SHA}"
 
       - name: Dispatch exact component reconcile
         uses: actions/github-script@v8
@@ -172,18 +170,25 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Check out marker tooling
+        if: steps.decision.outputs.rejected == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: .marker-tools
+          sparse-checkout: scripts/create_marker_tag.sh
+          sparse-checkout-cone-mode: false
+
       - name: Record immutable component rejection
         if: steps.decision.outputs.rejected == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           COMPONENT: ${{ inputs.component }}
           SHA: ${{ inputs.head_sha }}
         run: |
           TAG="prod-rejected/${COMPONENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${SHA:0:7}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --annotate "$TAG" "$SHA" \
-            --message "Rejected ${COMPONENT} at ${SHA}"
-          git push origin "refs/tags/${TAG}"
+          bash .marker-tools/scripts/create_marker_tag.sh "$TAG" "$SHA" \
+            "Rejected ${COMPONENT} at ${SHA}"
 
       - name: Dispatch dashboard publish
         uses: actions/github-script@v8

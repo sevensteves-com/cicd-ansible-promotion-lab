@@ -40,6 +40,8 @@ jobs:
             --output-dir _site
 
       - name: Backfill durable rejection markers
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           jq -r '
             .components as $components |
@@ -68,12 +70,8 @@ jobs:
             if git show-ref --verify --quiet "refs/tags/$tag"; then
               continue
             fi
-            git config user.name "github-actions[bot]"
-            git config user.email \
-              "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag --annotate "$tag" "$sha" \
-              --message "Rejected ${component} at ${sha}"
-            git push origin "refs/tags/$tag"
+            bash scripts/create_marker_tag.sh "$tag" "$sha" \
+              "Rejected ${component} at ${sha}"
           done
 
       - name: Upload GitHub Pages artifact

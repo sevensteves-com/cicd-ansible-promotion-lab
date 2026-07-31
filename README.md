@@ -116,6 +116,12 @@ The production workflow records two different immutable facts:
 The run ID makes every approval an ordered event, including re-approval of an
 older SHA for rollback. Existing short-SHA-only approval tags remain valid.
 
+All three markers are annotated tags written by `scripts/create_marker_tag.sh`
+through the git database API. They cannot be pushed with `git push`: a marker
+points at an approved SHA that is usually older than the tip of `main`, and
+GitHub reads such a push as the Actions token rewriting `.github/workflows/*`,
+which requires a `workflows` permission `GITHUB_TOKEN` cannot hold.
+
 After rejection, later `main` commits do not request the same playbook again
 while its tracked deployment inputs remain identical. A new approval is
 requested only after that playbook, its declaration, or one of its declared

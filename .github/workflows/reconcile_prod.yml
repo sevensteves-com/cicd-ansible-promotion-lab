@@ -75,6 +75,16 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # The workspace sits at the approved SHA, which predates this tooling.
+      # Marker helpers always come from main.
+      - name: Check out marker tooling
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: .marker-tools
+          sparse-checkout: scripts/create_marker_tag.sh
+          sparse-checkout-cone-mode: false
+
       - name: Verify exact component approval
         env:
           COMPONENT: ${{ matrix.id }}
@@ -133,15 +143,13 @@ jobs:
 
       - name: Record successful component apply
         env:
+          GH_TOKEN: ${{ github.token }}
           COMPONENT: ${{ matrix.id }}
           SHA: ${{ matrix.sha }}
         run: |
           TAG="prod-applied/${COMPONENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${SHA:0:7}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --annotate "$TAG" "$SHA" \
-            --message "Successfully applied ${COMPONENT} at ${SHA}"
-          git push origin "refs/tags/${TAG}"
+          bash .marker-tools/scripts/create_marker_tag.sh "$TAG" "$SHA" \
+            "Successfully applied ${COMPONENT} at ${SHA}"
 
   publish_state:
     name: Refresh production state snapshot

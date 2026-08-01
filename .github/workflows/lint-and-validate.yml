@@ -26,6 +26,7 @@ jobs:
       - name: Validate manifest and Python
         run: |
           python scripts/prod_components.py validate
+          scripts/test_create_marker_tag.sh
           ruff check scripts/
           python scripts/render_prod_state.py \
             --repository "$GITHUB_REPOSITORY" \

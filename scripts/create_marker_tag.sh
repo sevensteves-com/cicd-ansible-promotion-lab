@@ -25,17 +25,19 @@ MESSAGE=$3
 BOT_NAME="github-actions[bot]"
 BOT_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
 
-existing_object=$(
-  gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
-    --jq '.object.sha' 2>/dev/null || true
-)
+existing_object=""
+if existing_ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
+  --jq '.object.sha' 2>/dev/null); then
+  existing_object=$existing_ref
+fi
 
 if [ -n "$existing_object" ]; then
   # An annotated tag ref points at the tag object, so dereference to the commit.
-  existing_commit=$(
-    gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_object}" \
-      --jq '.object.sha' 2>/dev/null || echo "$existing_object"
-  )
+  existing_commit=$existing_object
+  if dereferenced_commit=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${existing_object}" \
+    --jq '.object.sha' 2>/dev/null); then
+    existing_commit=$dereferenced_commit
+  fi
   if [ "$existing_commit" != "$SHA" ]; then
     echo "::error::Existing ${TAG} points to ${existing_commit}, not ${SHA}"
     exit 1
